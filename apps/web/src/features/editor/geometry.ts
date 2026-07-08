@@ -31,6 +31,55 @@ export function objectBounds(object: SlideObject): Rect {
   return { x: object.x, y: object.y, width: object.width, height: object.height };
 }
 
+export function pointInRect(point: { x: number; y: number }, rect: Rect): boolean {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height
+  );
+}
+
+/**
+ * Top-down chain of objects under a slide point, starting at the given
+ * object: `[object, direct child, grandchild, ...]`. At each group level the
+ * front-most (last in array) child containing the point wins. Used by the
+ * canvas to descend one nesting level per double-click.
+ */
+export function hitChain(object: SlideObject, point: { x: number; y: number }): SlideObject[] {
+  const chain: SlideObject[] = [object];
+  let current: SlideObject = object;
+  while (current.type === "group") {
+    const child = current.children.findLast((candidate) =>
+      pointInRect(point, objectBounds(candidate)),
+    );
+    if (!child) {
+      break;
+    }
+    chain.push(child);
+    current = child;
+  }
+  return chain;
+}
+
+/**
+ * Deepest nesting level at which something inside the object's subtree is
+ * selected: 0 = the object itself, 1 = a direct child, ... -1 = nothing.
+ */
+export function maxSelectedDepth(
+  object: SlideObject,
+  selected: ReadonlySet<string>,
+  depth = 0,
+): number {
+  let result = selected.has(object.id) ? depth : -1;
+  if (object.type === "group") {
+    for (const child of object.children) {
+      result = Math.max(result, maxSelectedDepth(child, selected, depth + 1));
+    }
+  }
+  return result;
+}
+
 export function translateObject<T extends SlideObject>(object: T, dx: number, dy: number): T {
   if (object.type === "group") {
     return {

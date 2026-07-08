@@ -55,12 +55,16 @@ function emptyShapeTree(): XElement {
   );
 }
 
-function buildPresentation(slideCount: number): XDocument {
+function buildPresentation(
+  slideCount: number,
+  embeddedFontRelIds: Map<string, { regular: string; bold: string }>,
+): XDocument {
   return new XDocument(
     new XDeclaration("1.0", "UTF-8", "yes"),
     new XElement(
       P.presentation,
       presentationNamespaces(),
+      embeddedFontRelIds.size > 0 ? attr("embedTrueTypeFonts", 1) : null,
       new XElement(
         P.sldMasterIdLst,
         new XElement(P.sldMasterId, attr("id", 2147483648), attr(R.id, "rId1")),
@@ -75,6 +79,23 @@ function buildPresentation(slideCount: number): XDocument {
       ),
       new XElement(P.sldSz, attr("cx", SLIDE_CX), attr("cy", SLIDE_CY)),
       new XElement(P.notesSz, attr("cx", 6858000), attr("cy", 9144000)),
+      // CT_Presentation puts embeddedFontLst after notesSz. Regular and
+      // bold are embedded as separate static faces (PowerPoint does not
+      // load variable fonts).
+      embeddedFontRelIds.size > 0
+        ? new XElement(
+            P.embeddedFontLst,
+            [...embeddedFontRelIds.entries()].map(
+              ([typeface, relIds]) =>
+                new XElement(
+                  P.embeddedFont,
+                  new XElement(P.font, attr("typeface", typeface)),
+                  new XElement(P.regular, attr(R.id, relIds.regular)),
+                  new XElement(P.bold, attr(R.id, relIds.bold)),
+                ),
+            ),
+          )
+        : null,
     ),
   );
 }
@@ -278,11 +299,34 @@ export async function generatePresentation(doc: PresentationDoc): Promise<Blob> 
     await addRels(slideUri, slideRels);
   }
 
+  // Embedded fonts: one .fntdata part (raw static TTF) per face, referenced
+  // from the presentation part and listed in p:embeddedFontLst.
+  const embeddedFontRelIds = new Map<string, { regular: string; bold: string }>();
+  const fontRels: { id: string; type: string; target: string }[] = [];
+  let fontNumber = 0;
+  const addFontPart = (base64: string): string => {
+    fontNumber += 1;
+    pkg.addPart(`/ppt/fonts/font${fontNumber}.fntdata`, ContentType.fontData, "base64", base64);
+    const relId = `rIdFont${fontNumber}`;
+    fontRels.push({
+      id: relId,
+      type: RelationshipType.font,
+      target: `fonts/font${fontNumber}.fntdata`,
+    });
+    return relId;
+  };
+  for (const font of doc.embeddedFonts ?? []) {
+    embeddedFontRelIds.set(font.typeface, {
+      regular: addFontPart(font.regularBase64),
+      bold: addFontPart(font.boldBase64),
+    });
+  }
+
   pkg.addPart(
     "/ppt/presentation.xml",
     ContentType.presentation,
     "xml",
-    buildPresentation(doc.slides.length),
+    buildPresentation(doc.slides.length, embeddedFontRelIds),
   );
   await addRels("/ppt/presentation.xml", [
     { id: "rId1", type: RelationshipType.slideMaster, target: "slideMasters/slideMaster1.xml" },
@@ -292,6 +336,7 @@ export async function generatePresentation(doc: PresentationDoc): Promise<Blob> 
       type: RelationshipType.slide,
       target: `slides/slide${index + 1}.xml`,
     })),
+    ...fontRels,
   ]);
 
   pkg.addPart(

@@ -1,3 +1,4 @@
+import { fontDefinition, segmentByStyle } from "@/features/editor/fonts";
 import { boundingBox, objectBounds } from "@/features/editor/geometry";
 import { shapeDefinition } from "@/features/editor/shape-defs";
 import type {
@@ -64,20 +65,27 @@ function textBody(content: TextContent): TextBodyDoc | undefined {
   if (!content.text) {
     return undefined;
   }
+  // Each line becomes a paragraph; within a line, consecutive characters
+  // that share a style become one run (per-character style overrides).
+  let offset = 0;
+  const paragraphs = content.text.split("\n").map((line) => {
+    const segments = segmentByStyle(content, line, offset);
+    offset += line.length + 1;
+    return {
+      align: PARAGRAPH_ALIGN[content.align],
+      runs: segments.map((segment) => ({
+        text: segment.text,
+        sizePt: segment.style.fontSize,
+        bold: segment.style.bold,
+        italic: segment.style.italic,
+        color: hex(segment.style.color),
+        font: fontDefinition(segment.style.fontFamily)?.typeface,
+      })),
+    };
+  });
   return {
     anchor: BODY_ANCHOR[content.verticalAlign],
-    paragraphs: content.text.split("\n").map((line) => ({
-      align: PARAGRAPH_ALIGN[content.align],
-      runs: [
-        {
-          text: line,
-          sizePt: content.fontSize,
-          bold: content.bold,
-          italic: content.italic,
-          color: hex(content.color),
-        },
-      ],
-    })),
+    paragraphs,
   };
 }
 
@@ -108,12 +116,22 @@ function textChild(object: TextObject): ShapeDoc {
   };
 }
 
-async function chartChild(object: ChartObject, rasterize?: ChartRasterizer): Promise<ChartDoc> {
+export interface ExportOptions {
+  /** Chart → PNG renderer; injectable so Node validation can stub it. */
+  rasterize?: ChartRasterizer;
+  /** Export every chart as an image, regardless of each chart's flag. */
+  forceChartsAsImages?: boolean;
+  /** Static TTF data to embed (see `loadEmbeddedFonts`). */
+  embeddedFonts?: { typeface: string; regularBase64: string; boldBase64: string }[];
+}
+
+async function chartChild(object: ChartObject, options: ExportOptions): Promise<ChartDoc> {
+  const rasterize = options.rasterize;
   // The full editor model rides along as re-edit metadata: on the shape's
   // extLst always, and inside the PNG itself for image-exported charts.
   const reEditData = JSON.stringify(object);
   let image: ChartDoc["image"];
-  if (object.exportAsImage && rasterize) {
+  if ((object.exportAsImage || options.forceChartsAsImages) && rasterize) {
     const png = base64ToBytes(await rasterize(object));
     image = { pngBase64: bytesToBase64(insertPngTextChunk(png, PNG_TEXT_KEYWORD, reEditData)) };
   }
@@ -137,17 +155,14 @@ async function chartChild(object: ChartObject, rasterize?: ChartRasterizer): Pro
   };
 }
 
-async function leafChild(
-  object: LeafObject,
-  rasterize?: ChartRasterizer,
-): Promise<ShapeDoc | ChartDoc> {
+async function leafChild(object: LeafObject, options: ExportOptions): Promise<ShapeDoc | ChartDoc> {
   switch (object.type) {
     case "shape":
       return shapeChild(object);
     case "text":
       return textChild(object);
     case "chart":
-      return chartChild(object, rasterize);
+      return chartChild(object, options);
   }
 }
 
@@ -157,7 +172,7 @@ async function leafChild(
  * child transforms stay in the same coordinate space as the slide — a 1:1
  * mapping from the editor model, which also stores absolute coordinates.
  */
-async function groupChild(object: GroupObject, rasterize?: ChartRasterizer): Promise<GroupDoc> {
+async function groupChild(object: GroupObject, options: ExportOptions): Promise<GroupDoc> {
   return {
     type: "group",
     name: object.name,
@@ -165,7 +180,7 @@ async function groupChild(object: GroupObject, rasterize?: ChartRasterizer): Pro
     children: await Promise.all(
       object.children.map(
         (child): Promise<SlideChildDoc> =>
-          child.type === "group" ? groupChild(child, rasterize) : leafChild(child, rasterize),
+          child.type === "group" ? groupChild(child, options) : leafChild(child, options),
       ),
     ),
   };
@@ -173,7 +188,7 @@ async function groupChild(object: GroupObject, rasterize?: ChartRasterizer): Pro
 
 export async function deckToPresentationDoc(
   deck: Deck,
-  rasterize?: ChartRasterizer,
+  options: ExportOptions = {},
 ): Promise<PresentationDoc> {
   return {
     title: deck.title,
@@ -183,29 +198,37 @@ export async function deckToPresentationDoc(
         children: await Promise.all(
           slide.objects.map(
             (object): Promise<SlideChildDoc> =>
-              object.type === "group"
-                ? groupChild(object, rasterize)
-                : leafChild(object, rasterize),
+              object.type === "group" ? groupChild(object, options) : leafChild(object, options),
           ),
         ),
       })),
     ),
+    embeddedFonts: options.embeddedFonts,
   };
 }
 
-export async function exportDeckToPptxBlob(
-  deck: Deck,
-  rasterize: ChartRasterizer = rasterizeChartToPng,
-): Promise<Blob> {
-  return generatePresentation(await deckToPresentationDoc(deck, rasterize));
+export async function exportDeckToPptxBlob(deck: Deck, options: ExportOptions = {}): Promise<Blob> {
+  return generatePresentation(
+    await deckToPresentationDoc(deck, { rasterize: rasterizeChartToPng, ...options }),
+  );
 }
 
-export async function downloadDeckAsPptx(deck: Deck): Promise<void> {
-  const blob = await exportDeckToPptxBlob(deck);
+export function sanitizeFileName(name: string): string {
+  return name.replaceAll(/[\\/:*?"<>|]/g, "_").trim() || "presentation";
+}
+
+export interface DownloadOptions extends ExportOptions {
+  /** File name without the .pptx extension; defaults to the deck title. */
+  fileName?: string;
+}
+
+export async function downloadDeckAsPptx(deck: Deck, options: DownloadOptions = {}): Promise<void> {
+  const { fileName, ...exportOptions } = options;
+  const blob = await exportDeckToPptxBlob(deck, exportOptions);
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${deck.title.replaceAll(/[\\/:*?"<>|]/g, "_") || "presentation"}.pptx`;
+  anchor.download = `${sanitizeFileName(fileName ?? deck.title)}.pptx`;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();

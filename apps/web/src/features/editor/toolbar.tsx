@@ -18,6 +18,15 @@ import {
 
 import { Button } from "@workspace/ui/components/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@workspace/ui/components/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -26,10 +35,13 @@ import {
   DropdownMenuTrigger,
 } from "@workspace/ui/components/dropdown-menu";
 import { Input } from "@workspace/ui/components/input";
+import { Label } from "@workspace/ui/components/label";
 import { Separator } from "@workspace/ui/components/separator";
+import { Toggle } from "@workspace/ui/components/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
 
-import { downloadDeckAsPptx } from "@/lib/export-pptx";
+import { downloadDeckAsPptx, sanitizeFileName } from "@/lib/export-pptx";
+import { collectUsedFonts, loadEmbeddedFonts } from "@/lib/font-embed";
 import { deckFromPptxBlob } from "@/lib/import-pptx";
 import {
   CHART_DEFINITIONS,
@@ -39,6 +51,7 @@ import {
   SHAPE_DEFINITIONS,
 } from "./shape-defs";
 import { useEditorDispatch, useEditorState, useSelectedObjects } from "./store";
+import type { Deck, SlideObject } from "./types";
 
 function IconAction({
   label,
@@ -72,29 +85,160 @@ function IconAction({
   );
 }
 
+const containsChart = (object: SlideObject): boolean =>
+  object.type === "chart" || (object.type === "group" && object.children.some(containsChart));
+
+function deckHasCharts(deck: Deck): boolean {
+  return deck.slides.some((slide) => slide.objects.some(containsChart));
+}
+
+/** Export dialog: file name, font embedding, and chart rasterization. */
+function ExportDialog({ deck }: { deck: Deck }) {
+  const [open, setOpen] = React.useState(false);
+  const [fileName, setFileName] = React.useState("");
+  const [embedFonts, setEmbedFonts] = React.useState(false);
+  const [chartsAsImages, setChartsAsImages] = React.useState(false);
+  const [isExporting, startExport] = React.useTransition();
+  const [exportError, setExportError] = React.useState<string | null>(null);
+
+  const hasCharts = deckHasCharts(deck);
+  const usedFonts = collectUsedFonts(deck);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) {
+      // Fresh defaults per session; the file name follows the deck title.
+      setFileName(sanitizeFileName(deck.title));
+      setExportError(null);
+    }
+  };
+
+  const handleExport = () => {
+    setExportError(null);
+    startExport(async () => {
+      try {
+        const embeddedFonts =
+          embedFonts && usedFonts.length > 0 ? await loadEmbeddedFonts(deck) : undefined;
+        await downloadDeckAsPptx(deck, {
+          fileName,
+          embeddedFonts,
+          forceChartsAsImages: hasCharts && chartsAsImages,
+        });
+        setOpen(false);
+      } catch (error) {
+        setExportError(error instanceof Error ? error.message : String(error));
+      }
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogTrigger asChild>
+        <Button size="sm" data-testid="export-button">
+          <Download />
+          PPTX を書き出し
+        </Button>
+      </DialogTrigger>
+      <DialogContent data-testid="export-dialog">
+        <DialogHeader>
+          <DialogTitle>PPTX を書き出し</DialogTitle>
+          <DialogDescription>書き出しオプションを設定してください。</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="export-file-name" className="text-xs text-muted-foreground">
+              ファイル名
+            </Label>
+            <div className="flex items-center gap-1.5">
+              <Input
+                id="export-file-name"
+                value={fileName}
+                data-testid="export-file-name"
+                onChange={(event) => setFileName(event.target.value)}
+              />
+              <span className="shrink-0 text-sm text-muted-foreground">.pptx</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Label className="text-xs text-muted-foreground">フォントをファイルに埋め込む</Label>
+              <p className="text-[11px] leading-snug text-muted-foreground/80">
+                {usedFonts.length > 0
+                  ? "使用中のフォントを埋め込み、フォント未インストールの環境でも同じ表示にします (ファイルサイズが大きくなります)。"
+                  : "テキストに埋め込み対象のフォント (Noto Sans/Serif JP) が使われていません。"}
+              </p>
+              {usedFonts.length > 0 ? (
+                <p
+                  className="mt-1 text-[11px] leading-snug text-amber-600 dark:text-amber-500"
+                  data-testid="export-embed-fonts-caution"
+                >
+                  ※ PowerPoint
+                  の環境によっては、埋め込んだフォントが正しく表示されないことがあります。
+                </p>
+              ) : null}
+            </div>
+            <Toggle
+              size="sm"
+              variant="outline"
+              pressed={embedFonts}
+              disabled={usedFonts.length === 0}
+              onPressedChange={setEmbedFonts}
+              aria-label="フォントをファイルに埋め込む"
+              data-testid="export-embed-fonts"
+            >
+              {embedFonts ? "ON" : "OFF"}
+            </Toggle>
+          </div>
+          {hasCharts ? (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label className="text-xs text-muted-foreground">
+                  グラフをすべて画像として書き出す
+                </Label>
+                <p className="text-[11px] leading-snug text-muted-foreground/80">
+                  ネイティブグラフの代わりに PNG
+                  として書き出します。再編集用データは画像に埋め込まれます。
+                </p>
+              </div>
+              <Toggle
+                size="sm"
+                variant="outline"
+                pressed={chartsAsImages}
+                onPressedChange={setChartsAsImages}
+                aria-label="グラフをすべて画像として書き出す"
+                data-testid="export-charts-as-images"
+              >
+                {chartsAsImages ? "ON" : "OFF"}
+              </Toggle>
+            </div>
+          ) : null}
+          {exportError ? (
+            <p className="text-sm text-destructive" role="alert">
+              書き出しに失敗しました: {exportError}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button onClick={handleExport} disabled={isExporting} data-testid="export-confirm-button">
+            {isExporting ? <LoaderCircle className="animate-spin" /> : <Download />}
+            {isExporting ? "書き出し中…" : "書き出し"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function EditorToolbar() {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
   const selection = useSelectedObjects();
-  const [isExporting, startExport] = React.useTransition();
-  const [exportError, setExportError] = React.useState<string | null>(null);
   const [isImporting, startImport] = React.useTransition();
   const [importError, setImportError] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const canGroup = selection.length >= 2;
   const canUngroup = selection.some((object) => object.type === "group");
-
-  const handleExport = () => {
-    setExportError(null);
-    startExport(async () => {
-      try {
-        await downloadDeckAsPptx(state.deck);
-      } catch (error) {
-        setExportError(error instanceof Error ? error.message : String(error));
-      }
-    });
-  };
 
   const handleImportFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -230,11 +374,6 @@ export function EditorToolbar() {
             読み込みに失敗しました: {importError}
           </p>
         ) : null}
-        {exportError ? (
-          <p className="text-sm text-destructive" role="alert">
-            書き出しに失敗しました: {exportError}
-          </p>
-        ) : null}
         <input
           ref={fileInputRef}
           type="file"
@@ -253,10 +392,7 @@ export function EditorToolbar() {
           {isImporting ? <LoaderCircle className="animate-spin" /> : <FolderOpen />}
           {isImporting ? "読み込み中…" : "開く"}
         </Button>
-        <Button size="sm" onClick={handleExport} disabled={isExporting} data-testid="export-button">
-          {isExporting ? <LoaderCircle className="animate-spin" /> : <Download />}
-          {isExporting ? "書き出し中…" : "PPTX を書き出し"}
-        </Button>
+        <ExportDialog deck={state.deck} />
       </div>
     </header>
   );

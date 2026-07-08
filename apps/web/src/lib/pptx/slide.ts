@@ -69,6 +69,14 @@ function textBodyElement(body: TextBodyDoc | undefined): XElement {
                       run.italic ? attr("i", 1) : null,
                       attr("dirty", 0),
                       run.color ? solidFill(run.color) : null,
+                      // Both a:latin and a:ea so Latin and Japanese glyphs
+                      // pick up the same face in PowerPoint.
+                      run.font
+                        ? [
+                            new XElement(A.latin, attr("typeface", run.font)),
+                            new XElement(A.ea, attr("typeface", run.font)),
+                          ]
+                        : null,
                     ),
                     new XElement(A.t, run.text),
                   ),

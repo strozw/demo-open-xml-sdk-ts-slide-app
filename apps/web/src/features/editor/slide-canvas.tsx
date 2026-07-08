@@ -2,10 +2,31 @@
 
 import * as React from "react";
 
-import { normalizeRect, objectBounds, rectsIntersect } from "./geometry";
+import {
+  hitChain,
+  maxSelectedDepth,
+  normalizeRect,
+  objectBounds,
+  pointInRect,
+  rectsIntersect,
+} from "./geometry";
+import { fontDefinition, remapCharStyles, segmentByStyle } from "./fonts";
 import { ObjectContent } from "./object-view";
-import { useCurrentSlide, useEditorDispatch, useEditorState } from "./store";
-import { SLIDE_HEIGHT, SLIDE_WIDTH, type Rect } from "./types";
+import {
+  findObjectDeep,
+  useCurrentSlide,
+  useEditorDispatch,
+  useEditorState,
+  useSelectedObjects,
+} from "./store";
+import {
+  SLIDE_HEIGHT,
+  SLIDE_WIDTH,
+  type Rect,
+  type ShapeObject,
+  type SlideObject,
+  type TextObject,
+} from "./types";
 
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
@@ -72,9 +93,11 @@ export function SlideCanvas() {
   const slide = useCurrentSlide();
   const state = useEditorState();
   const dispatch = useEditorDispatch();
+  const selectedObjects = useSelectedObjects();
 
   const containerRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLDivElement>(null);
+  const editingMirrorRef = React.useRef<HTMLDivElement>(null);
   const sessionRef = React.useRef<PointerSession>({ mode: "idle" });
   const [scale, setScale] = React.useState(0.6);
   const [marquee, setMarquee] = React.useState<{ start: Point; current: Point } | null>(null);
@@ -131,18 +154,70 @@ export function SlideCanvas() {
     setMarquee({ start: point, current: point });
   };
 
-  const handleObjectPointerDown = (event: React.PointerEvent<HTMLDivElement>, id: string) => {
+  const handleObjectPointerDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+    object: SlideObject,
+  ) => {
     if (event.button !== 0) {
       return;
     }
     event.stopPropagation();
     canvasRef.current?.setPointerCapture(event.pointerId);
     if (event.shiftKey) {
-      dispatch({ type: "toggle-selected", id });
-    } else if (!state.selectedIds.includes(id)) {
-      dispatch({ type: "set-selection", ids: [id] });
+      dispatch({ type: "toggle-selected", id: object.id });
+    } else {
+      // When the selection has descended into this group (via double-click),
+      // a plain click keeps working at that depth: it targets the object at
+      // the same nesting level under the cursor, so nested children can be
+      // clicked between siblings and dragged without leaving the group.
+      const depth = maxSelectedDepth(object, selectedSet);
+      const chain = depth > 0 ? hitChain(object, toSlidePoint(event)) : [object];
+      const target = chain[Math.min(Math.max(depth, 0), chain.length - 1)]!;
+      if (!state.selectedIds.includes(target.id)) {
+        dispatch({ type: "set-selection", ids: [target.id] });
+      }
     }
     sessionRef.current = { mode: "move", last: toSlidePoint(event) };
+  };
+
+  /**
+   * Double-click descends the selection one nesting level: with the group
+   * selected it selects the direct child under the cursor; if that child is
+   * itself a group, the next double-click selects inside it, and so on.
+   *
+   * The handler lives on the CANVAS element, not the object wrappers:
+   * pointer capture (set on pointerdown for dragging) retargets the
+   * compatibility mouse events — including dblclick — to the capturing
+   * canvas, so a wrapper-level onDoubleClick would never fire. The hit
+   * object is resolved from coordinates instead.
+   */
+  const handleCanvasDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const point = toSlidePoint(event);
+    // Front-most top-level object under the cursor.
+    const object = slide.objects.findLast((candidate) =>
+      pointInRect(point, objectBounds(candidate)),
+    );
+    if (!object) {
+      return;
+    }
+    const chain = object.type === "group" ? hitChain(object, point) : [object];
+    let deepestSelected = -1;
+    chain.forEach((node, index) => {
+      if (selectedSet.has(node.id)) {
+        deepestSelected = index;
+      }
+    });
+    const target = chain[Math.min(deepestSelected + 1, chain.length - 1)]!;
+    // Once the descent has reached a shape / text box (or the double-click
+    // hit one directly), the next double-click starts in-place text editing.
+    const atDeepest = deepestSelected === chain.length - 1;
+    if ((target.type === "shape" || target.type === "text") && (chain.length === 1 || atDeepest)) {
+      dispatch({ type: "start-text-edit", id: target.id });
+      return;
+    }
+    if (!state.selectedIds.includes(target.id) || state.selectedIds.length !== 1) {
+      dispatch({ type: "set-selection", ids: [target.id] });
+    }
   };
 
   const handleResizePointerDown = (
@@ -237,10 +312,49 @@ export function SlideCanvas() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [dispatch]);
 
-  const singleSelected =
-    state.selectedIds.length === 1
-      ? slide.objects.find((object) => object.id === state.selectedIds[0])
-      : undefined;
+  // Selection can point at objects nested inside groups (object tree /
+  // double-click), so resolve deeply for resize handles and outlines.
+  const singleSelected = selectedObjects.length === 1 ? selectedObjects[0] : undefined;
+  const topLevelIds = new Set(slide.objects.map((object) => object.id));
+  const nestedSelected = selectedObjects.filter((object) => !topLevelIds.has(object.id));
+
+  // The object whose text is being edited in place (shape or text box).
+  const editingObject = state.textEditing
+    ? (findObjectDeep(slide.objects, state.textEditing.objectId) as
+        | ShapeObject
+        | TextObject
+        | undefined)
+    : undefined;
+
+  const handleEditingTextChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (!editingObject) {
+      return;
+    }
+    dispatch({
+      type: "update-object",
+      id: editingObject.id,
+      patch: {
+        text: {
+          ...editingObject.text,
+          text: event.target.value,
+          charStyles: remapCharStyles(
+            editingObject.text.text,
+            event.target.value,
+            editingObject.text.charStyles,
+          ),
+        },
+      },
+    });
+  };
+
+  const handleEditingSelect = (event: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const textarea = event.currentTarget;
+    dispatch({
+      type: "set-text-selection",
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    });
+  };
 
   return (
     <div
@@ -270,6 +384,7 @@ export function SlideCanvas() {
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
+          onDoubleClick={handleCanvasDoubleClick}
         >
           {slide.objects.map((object) => {
             const selected = selectedSet.has(object.id) || marqueeHits.has(object.id);
@@ -287,12 +402,105 @@ export function SlideCanvas() {
                   outline: selected ? "2px solid #2563eb" : undefined,
                   outlineOffset: 1,
                 }}
-                onPointerDown={(event) => handleObjectPointerDown(event, object.id)}
+                onPointerDown={(event) => handleObjectPointerDown(event, object)}
               >
-                <ObjectContent object={object} />
+                <ObjectContent object={object} hideTextObjectId={editingObject?.id} />
               </div>
             );
           })}
+
+          {editingObject ? (
+            // WYSIWYG in-place editor: the textarea owns input, caret and
+            // selection but draws its text transparent; a mirror div behind
+            // it renders the same text with the real (per-character) fonts.
+            // Both share metrics (padding / size / line-height / wrapping),
+            // so glyphs line up; the selection highlight is semi-transparent
+            // to keep the mirror text readable through it.
+            <div
+              className="absolute z-20"
+              style={{
+                left: editingObject.x,
+                top: editingObject.y,
+                width: editingObject.width,
+                height: editingObject.height,
+              }}
+            >
+              <div
+                ref={editingMirrorRef}
+                aria-hidden
+                className="pointer-events-none absolute inset-0 overflow-hidden px-2 py-1"
+                style={{ textAlign: editingObject.text.align, lineHeight: 1.25 }}
+              >
+                <div className="w-full whitespace-pre-wrap break-words">
+                  {segmentByStyle(editingObject.text, editingObject.text.text, 0).map(
+                    (segment, index) => (
+                      <span
+                        key={index}
+                        style={{
+                          fontFamily: fontDefinition(segment.style.fontFamily)?.css,
+                          fontSize: segment.style.fontSize,
+                          color: segment.style.color,
+                          fontWeight: segment.style.bold ? 700 : 400,
+                          fontStyle: segment.style.italic ? "italic" : "normal",
+                        }}
+                      >
+                        {segment.text}
+                      </span>
+                    ),
+                  )}
+                </div>
+              </div>
+              <textarea
+                // Remount per object so autoFocus fires for each session.
+                key={editingObject.id}
+                autoFocus
+                data-testid="inline-text-editor"
+                value={editingObject.text.text}
+                onChange={handleEditingTextChange}
+                onSelect={handleEditingSelect}
+                onScroll={(event) => {
+                  const mirror = editingMirrorRef.current;
+                  if (mirror) {
+                    mirror.scrollTop = event.currentTarget.scrollTop;
+                    mirror.scrollLeft = event.currentTarget.scrollLeft;
+                  }
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (event.key === "Escape") {
+                    dispatch({ type: "end-text-edit" });
+                  }
+                }}
+                className="absolute inset-0 h-full w-full resize-none rounded-none border-none bg-transparent px-2 py-1 text-transparent outline-2 outline-blue-500 selection:bg-blue-500/25 selection:text-transparent"
+                style={{
+                  fontSize: editingObject.text.fontSize,
+                  caretColor: editingObject.text.color,
+                  textAlign: editingObject.text.align,
+                  fontWeight: editingObject.text.bold ? 700 : 400,
+                  fontStyle: editingObject.text.italic ? "italic" : "normal",
+                  lineHeight: 1.25,
+                  fontFamily: fontDefinition(editingObject.text.fontFamily)?.css,
+                }}
+              />
+            </div>
+          ) : null}
+
+          {nestedSelected.map((object) => (
+            <div
+              key={`nested-selection-${object.id}`}
+              data-testid={`nested-selection-${object.id}`}
+              className="pointer-events-none absolute"
+              style={{
+                left: object.x,
+                top: object.y,
+                width: object.width,
+                height: object.height,
+                outline: "2px solid #2563eb",
+                outlineOffset: 1,
+              }}
+            />
+          ))}
 
           {singleSelected
             ? RESIZE_HANDLES.map(({ handle, left, top }) => (

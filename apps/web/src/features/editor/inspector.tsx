@@ -29,10 +29,18 @@ import { Toggle } from "@workspace/ui/components/toggle";
 import { ToggleGroup, ToggleGroupItem } from "@workspace/ui/components/toggle-group";
 
 import { chartTheme } from "./chart-preview";
+import {
+  FONT_FAMILIES,
+  remapCharStyles,
+  resolveCharStyle,
+  type FontFamilyKey,
+  type ResolvedCharStyle,
+} from "./fonts";
 import { chartLabel, CHART_DEFINITIONS } from "./shape-defs";
-import { useCurrentSlide, useEditorDispatch, useSelectedObjects } from "./store";
+import { useCurrentSlide, useEditorDispatch, useEditorState, useSelectedObjects } from "./store";
 import { createId } from "./types";
 import type {
+  CharStyle,
   ChartKind,
   ChartObject,
   ShapeObject,
@@ -156,6 +164,151 @@ const V_ALIGN_ITEMS: { value: TextVAlign; label: string; icon: React.ReactNode }
   { value: "bottom", label: "下揃え", icon: <ArrowDownToLine /> },
 ];
 
+/**
+ * Info + styling for the text range selected in the canvas' in-place editor
+ * (double-click a shape / text box, then use Shift+arrow keys or the mouse).
+ * Font family, size, color, bold and italic apply per character.
+ */
+function TextSelectionFields({
+  object,
+  patchText,
+}: {
+  object: (ShapeObject | TextObject) & { text: TextContent };
+  patchText: (patch: Partial<TextContent>) => void;
+}) {
+  const state = useEditorState();
+  const editing = state.textEditing;
+  if (!editing || editing.objectId !== object.id) {
+    return null;
+  }
+  const content = object.text;
+  const start = Math.min(editing.selectionStart, content.text.length);
+  const end = Math.min(editing.selectionEnd, content.text.length);
+  if (start === end) {
+    return (
+      <p className="rounded-md bg-muted/60 px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+        編集中: Shift+矢印キーまたはドラッグで文字を選択すると、その範囲に書式
+        (フォント・サイズ・色・太字・斜体) を適用できます。
+      </p>
+    );
+  }
+  const selectedText = content.text.slice(start, end);
+  const resolved = Array.from({ length: end - start }, (_, i) =>
+    resolveCharStyle(content, start + i),
+  );
+  const uniform = <T,>(pick: (style: ResolvedCharStyle) => T): T | undefined => {
+    const values = new Set(resolved.map(pick));
+    return values.size === 1 ? [...values][0] : undefined;
+  };
+  const uniformFont = uniform((style) => style.fontFamily);
+  const fontMixed = new Set(resolved.map((style) => style.fontFamily)).size > 1;
+  const uniformSize = uniform((style) => style.fontSize);
+  const uniformColor = uniform((style) => style.color);
+  const allBold = resolved.every((style) => style.bold);
+  const allItalic = resolved.every((style) => style.italic);
+
+  /** Merges the patch into every character of the selection. */
+  const applyStyle = (stylePatch: Partial<CharStyle>) => {
+    const charStyles: (CharStyle | null)[] = Array.from(
+      { length: content.text.length },
+      (_, i) => content.charStyles?.[i] ?? null,
+    );
+    for (let index = start; index < end; index += 1) {
+      const merged: CharStyle = { ...charStyles[index], ...stylePatch };
+      // Drop keys explicitly reset to "inherit the base value".
+      for (const key of Object.keys(merged) as (keyof CharStyle)[]) {
+        if (merged[key] === undefined) {
+          delete merged[key];
+        }
+      }
+      charStyles[index] = Object.keys(merged).length > 0 ? merged : null;
+    }
+    patchText({ charStyles: charStyles.some((style) => style !== null) ? charStyles : undefined });
+  };
+
+  return (
+    <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-2">
+      <p className="text-[11px] text-muted-foreground" data-testid="text-selection-info">
+        選択中 ({start + 1}〜{end} 文字目):{" "}
+        <span className="font-medium text-foreground">「{selectedText}」</span>
+      </p>
+      <Select
+        value={fontMixed ? "" : (uniformFont ?? "default")}
+        onValueChange={(value) =>
+          applyStyle({ fontFamily: value === "default" ? undefined : (value as FontFamilyKey) })
+        }
+      >
+        <SelectTrigger className="h-8 w-full" data-testid="selection-font-select">
+          <SelectValue placeholder="フォント (混在)" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="default">既定 (全体設定に従う)</SelectItem>
+          {FONT_FAMILIES.map((definition) => (
+            <SelectItem key={definition.key} value={definition.key}>
+              <span style={{ fontFamily: definition.css }}>{definition.label}</span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="サイズ (pt)">
+          <NumberInput
+            value={uniformSize ?? content.fontSize}
+            min={6}
+            testId="selection-font-size"
+            onChange={(fontSize) => applyStyle({ fontSize: Math.max(6, fontSize) })}
+          />
+        </Field>
+        <Field label="色">
+          <ColorInput
+            value={uniformColor ?? content.color}
+            testId="selection-color"
+            onChange={(color) => applyStyle({ color })}
+          />
+        </Field>
+      </div>
+      <div className="flex items-center gap-2">
+        <Toggle
+          size="sm"
+          variant="outline"
+          pressed={allBold}
+          onPressedChange={(bold) => applyStyle({ bold })}
+          aria-label="選択範囲を太字"
+          data-testid="selection-bold"
+        >
+          <span className="font-bold">B</span>
+        </Toggle>
+        <Toggle
+          size="sm"
+          variant="outline"
+          pressed={allItalic}
+          onPressedChange={(italic) => applyStyle({ italic })}
+          aria-label="選択範囲を斜体"
+          data-testid="selection-italic"
+        >
+          <span className="italic">I</span>
+        </Toggle>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto h-7 px-2 text-[11px]"
+          onClick={() =>
+            applyStyle({
+              fontFamily: undefined,
+              fontSize: undefined,
+              color: undefined,
+              bold: undefined,
+              italic: undefined,
+            })
+          }
+        >
+          書式をクリア
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function TextFields({ object }: { object: (ShapeObject | TextObject) & { text: TextContent } }) {
   const dispatch = useEditorDispatch();
   const patchText = (patch: Partial<TextContent>) => {
@@ -168,13 +321,45 @@ function TextFields({ object }: { object: (ShapeObject | TextObject) & { text: T
 
   return (
     <div className="space-y-3">
+      <TextSelectionFields object={object} patchText={patchText} />
       <Field label="テキスト">
         <Textarea
           value={object.text.text}
           rows={3}
           data-testid="text-content"
-          onChange={(event) => patchText({ text: event.target.value })}
+          onChange={(event) =>
+            patchText({
+              text: event.target.value,
+              charStyles: remapCharStyles(
+                object.text.text,
+                event.target.value,
+                object.text.charStyles,
+              ),
+            })
+          }
         />
+      </Field>
+      <Field label="フォント">
+        <Select
+          value={object.text.fontFamily ?? "default"}
+          onValueChange={(value) =>
+            patchText({
+              fontFamily: value === "default" ? undefined : (value as FontFamilyKey),
+            })
+          }
+        >
+          <SelectTrigger className="h-8 w-full" data-testid="font-family-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">既定</SelectItem>
+            {FONT_FAMILIES.map((definition) => (
+              <SelectItem key={definition.key} value={definition.key}>
+                <span style={{ fontFamily: definition.css }}>{definition.label}</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="フォントサイズ (pt)">

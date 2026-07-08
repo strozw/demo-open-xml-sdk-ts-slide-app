@@ -3,6 +3,7 @@
 import type { CSSProperties } from "react";
 
 import { ChartPreview } from "./chart-preview";
+import { fontDefinition, segmentByStyle } from "./fonts";
 import { shapeDefinition } from "./shape-defs";
 import type { GroupObject, ShapeObject, SlideObject, TextContent, TextVAlign } from "./types";
 
@@ -16,6 +17,9 @@ function TextBlock({ content }: { content: TextContent }) {
   if (!content.text) {
     return null;
   }
+  // Consecutive same-style characters render as one span; newlines stay
+  // inside segments and are honored by white-space: pre-wrap.
+  const segments = segmentByStyle(content, content.text, 0);
   return (
     <div
       className="pointer-events-none absolute inset-0 flex flex-col overflow-hidden px-2 py-1"
@@ -23,16 +27,22 @@ function TextBlock({ content }: { content: TextContent }) {
     >
       <div
         className="w-full whitespace-pre-wrap break-words"
-        style={{
-          textAlign: content.align,
-          color: content.color,
-          fontSize: content.fontSize,
-          fontWeight: content.bold ? 700 : 400,
-          fontStyle: content.italic ? "italic" : "normal",
-          lineHeight: 1.25,
-        }}
+        style={{ textAlign: content.align, lineHeight: 1.25 }}
       >
-        {content.text}
+        {segments.map((segment, index) => (
+          <span
+            key={index}
+            style={{
+              fontFamily: fontDefinition(segment.style.fontFamily)?.css,
+              fontSize: segment.style.fontSize,
+              color: segment.style.color,
+              fontWeight: segment.style.bold ? 700 : 400,
+              fontStyle: segment.style.italic ? "italic" : "normal",
+            }}
+          >
+            {segment.text}
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -88,27 +98,41 @@ function ShapeSvg({ object }: { object: ShapeObject }) {
   );
 }
 
-export function ObjectContent({ object }: { object: SlideObject }) {
+export function ObjectContent({
+  object,
+  hideTextObjectId,
+}: {
+  object: SlideObject;
+  /** Text of this object is hidden while it is being edited in place. */
+  hideTextObjectId?: string;
+}) {
+  const textHidden = object.id === hideTextObjectId;
   switch (object.type) {
     case "shape":
       return (
         <>
           <ShapeSvg object={object} />
-          <TextBlock content={object.text} />
+          {textHidden ? null : <TextBlock content={object.text} />}
         </>
       );
     case "text":
-      return <TextBlock content={object.text} />;
+      return textHidden ? null : <TextBlock content={object.text} />;
     case "chart":
       return <ChartPreview chart={object} />;
     case "group":
-      return <GroupContent group={object} />;
+      return <GroupContent group={object} hideTextObjectId={hideTextObjectId} />;
     default:
       return null;
   }
 }
 
-function GroupContent({ group }: { group: GroupObject }) {
+function GroupContent({
+  group,
+  hideTextObjectId,
+}: {
+  group: GroupObject;
+  hideTextObjectId?: string;
+}) {
   // Children carry absolute slide coordinates; offset them into the group's
   // local frame for rendering.
   return (
@@ -124,7 +148,7 @@ function GroupContent({ group }: { group: GroupObject }) {
             height: child.height,
           }}
         >
-          <ObjectContent object={child} />
+          <ObjectContent object={child} hideTextObjectId={hideTextObjectId} />
         </div>
       ))}
     </div>

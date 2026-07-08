@@ -26,6 +26,22 @@ export type ShapeKind =
   | "star5"
   | "hexagon";
 
+/**
+ * Per-character style override; absent fields inherit the TextContent base
+ * values. Applied via the in-place editor's selection.
+ *
+ * `fontFamily: null` explicitly forces the theme-default font even when the
+ * base `fontFamily` is set (the importer needs this to faithfully restore
+ * mixed default/non-default runs); a missing key inherits the base.
+ */
+export interface CharStyle {
+  fontFamily?: import("./fonts").FontFamilyKey | null;
+  fontSize?: number;
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
+}
+
 export interface TextContent {
   text: string;
   fontSize: number;
@@ -34,6 +50,13 @@ export interface TextContent {
   color: string;
   align: TextHAlign;
   verticalAlign: TextVAlign;
+  /** Base font family for the whole text; undefined = 既定 (theme font). */
+  fontFamily?: import("./fonts").FontFamilyKey;
+  /**
+   * Per-character style overrides, aligned index-by-index with `text`
+   * (null = no override). Kept in sync across edits by `remapCharStyles`.
+   */
+  charStyles?: (CharStyle | null)[];
 }
 
 export interface ShapeObject extends BaseObject {

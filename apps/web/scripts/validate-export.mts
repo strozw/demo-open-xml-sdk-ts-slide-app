@@ -14,6 +14,7 @@ import { inflateRawSync } from "node:zlib";
 
 import { P, PmlPackage } from "openxmlsdkts";
 
+import { resolveCharStyle } from "../src/features/editor/fonts";
 import { deckToPresentationDoc } from "../src/lib/export-pptx";
 import { deckFromPptxBlob } from "../src/lib/import-pptx";
 import { generatePresentation } from "../src/lib/pptx";
@@ -58,6 +59,29 @@ const deck: Deck = {
             color: "#ffffff",
             align: "right",
             verticalAlign: "bottom",
+            // Base Noto Sans JP with a per-character style override on the
+            // middle characters (serif / 30pt / red / italic / non-bold)
+            // → three runs in the paragraph.
+            fontFamily: "noto-sans",
+            charStyles: [
+              null,
+              null,
+              {
+                fontFamily: "noto-serif",
+                fontSize: 30,
+                color: "#ff0000",
+                italic: true,
+                bold: false,
+              },
+              {
+                fontFamily: "noto-serif",
+                fontSize: 30,
+                color: "#ff0000",
+                italic: true,
+                bold: false,
+              },
+              null,
+            ],
           },
         },
         {
@@ -373,7 +397,27 @@ function readZipEntries(buffer: Buffer): Map<string, Buffer> {
   return entries;
 }
 
-const blob = await generatePresentation(await deckToPresentationDoc(deck, stubRasterizer));
+// Embedded-font data is injected directly (a fake TTF payload) — loading
+// real font binaries is a browser-side concern (`loadEmbeddedFonts`).
+const FAKE_TTF_BASE64 = Buffer.from("fake-ttf-data").toString("base64");
+const FAKE_BOLD_TTF_BASE64 = Buffer.from("fake-bold-ttf-data").toString("base64");
+const blob = await generatePresentation(
+  await deckToPresentationDoc(deck, {
+    rasterize: stubRasterizer,
+    embeddedFonts: [
+      {
+        typeface: "Noto Sans JP",
+        regularBase64: FAKE_TTF_BASE64,
+        boldBase64: FAKE_BOLD_TTF_BASE64,
+      },
+      {
+        typeface: "Noto Serif JP",
+        regularBase64: FAKE_TTF_BASE64,
+        boldBase64: FAKE_BOLD_TTF_BASE64,
+      },
+    ],
+  }),
+);
 const buffer = Buffer.from(await blob.arrayBuffer());
 const entries = readZipEntries(buffer);
 
@@ -429,7 +473,18 @@ assert.ok(slide1.includes(`<a:ln w='${2 * EMU_PER_PX}'>`), "outline width");
 assert.ok(slide1.includes("anchor='b'"), "anchor bottom");
 assert.ok(slide1.includes("algn='r'"), "align right");
 assert.ok(slide1.includes("sz='2400' b='1'"), "bold 24pt run");
-assert.ok(slide1.includes("こんにちは"), "shape text");
+
+// Per-character styles: the paragraph splits into consecutive-same-style
+// runs (こん / にち / は → 3 runs) carrying their own size / bold / italic /
+// color / typeface in a:rPr.
+assert.ok(slide1.includes("<a:t>こん</a:t>"), "leading base-style run");
+assert.ok(slide1.includes("<a:t>にち</a:t>"), "styled override run");
+assert.ok(slide1.includes("<a:t>は</a:t>"), "trailing base-style run");
+assert.ok(slide1.includes("sz='3000' i='1'"), "override run is 30pt italic non-bold");
+assert.ok(slide1.includes("<a:srgbClr val='FF0000' />"), "override run color");
+assert.ok(slide1.includes("<a:latin typeface='Noto Sans JP' />"), "latin typeface (sans)");
+assert.ok(slide1.includes("<a:latin typeface='Noto Serif JP' />"), "latin typeface (serif)");
+assert.ok(slide1.includes("<a:ea typeface='Noto Serif JP' />"), "ea typeface (serif)");
 
 // Text box: centered anchor/alignment, italic run, no fill.
 assert.ok(slide1.includes("anchor='ctr'"), "anchor center");
@@ -499,6 +554,62 @@ assert.ok(surfaceXml.includes("<c:serAx>"), "surface chart has a series axis");
 
 // Slide background color.
 assert.ok(slide1.includes("<a:srgbClr val='F5F5F4' />"), "slide background fill");
+
+// ---- Embedded fonts ------------------------------------------------------
+const presentationXml = entries.get("ppt/presentation.xml")!.toString("utf8");
+assert.ok(presentationXml.includes("embedTrueTypeFonts='1'"), "embedTrueTypeFonts flag");
+assert.ok(presentationXml.includes("<p:embeddedFontLst>"), "embeddedFontLst present");
+assert.ok(
+  presentationXml.includes("<p:font typeface='Noto Sans JP' />") &&
+    presentationXml.includes("<p:font typeface='Noto Serif JP' />"),
+  "embedded font typefaces",
+);
+// Regular + bold faces per family → 4 fntdata parts.
+for (const index of [1, 2, 3, 4]) {
+  assert.ok(names.includes(`ppt/fonts/font${index}.fntdata`), `font${index}.fntdata part missing`);
+}
+assert.ok(
+  presentationXml.includes("<p:regular r:id='rIdFont1' />") &&
+    presentationXml.includes("<p:bold r:id='rIdFont2' />"),
+  "embedded font regular/bold references",
+);
+assert.ok(
+  contentTypes.includes("PartName='/ppt/fonts/font1.fntdata' ContentType='application/x-fontdata'"),
+  "fntdata content type",
+);
+const presentationRels = entries.get("ppt/_rels/presentation.xml.rels")!.toString("utf8");
+assert.ok(
+  presentationRels.includes("relationships/font' Target='fonts/font1.fntdata'"),
+  "presentation → font relationship",
+);
+assert.equal(
+  entries.get("ppt/fonts/font1.fntdata")!.toString("utf8"),
+  "fake-ttf-data",
+  "regular fntdata payload round-trips",
+);
+assert.equal(
+  entries.get("ppt/fonts/font2.fntdata")!.toString("utf8"),
+  "fake-bold-ttf-data",
+  "bold fntdata payload round-trips",
+);
+
+// ---- forceChartsAsImages: every chart becomes a p:pic ---------------------
+{
+  const forcedBlob = await generatePresentation(
+    await deckToPresentationDoc(deck, { rasterize: stubRasterizer, forceChartsAsImages: true }),
+  );
+  const forcedEntries = readZipEntries(Buffer.from(await forcedBlob.arrayBuffer()));
+  const forcedNames = [...forcedEntries.keys()];
+  assert.ok(
+    !forcedNames.some((name) => /ppt\/charts\/chart\d+\.xml/.test(name)),
+    "forced export must not contain native chart parts",
+  );
+  assert.equal(
+    forcedNames.filter((name) => /ppt\/media\/image\d+\.png/.test(name)).length,
+    6,
+    "forced export renders all six charts as images",
+  );
+}
 
 // ---- Image-exported chart (p:pic + PNG media part + re-edit metadata) ----
 
@@ -571,8 +682,30 @@ assert.deepEqual(
 // Opening the generated file restores the editor model. Ids are regenerated
 // on import and empty-text styling is not serialized, so both sides are
 // normalized before comparing.
-const normalizeText = (content: TextContent): TextContent =>
-  content.text ? content : { ...createTextContent(), text: "" };
+// Per-character styling can be represented as base values, overrides, or a
+// mix of both (the importer derives its own base from the first run), so
+// decks compare on the EFFECTIVE per-character styles.
+const normalizeText = (content: TextContent): TextContent => {
+  const base = content.text ? content : { ...createTextContent(), text: "" };
+  const resolved = Array.from({ length: base.text.length }, (_, index) =>
+    resolveCharStyle(base, index),
+  );
+  return {
+    ...base,
+    fontSize: 0,
+    bold: false,
+    italic: false,
+    color: "",
+    fontFamily: undefined,
+    charStyles: resolved.map((style) => ({
+      fontFamily: style.fontFamily ?? null,
+      fontSize: style.fontSize,
+      color: style.color,
+      bold: style.bold,
+      italic: style.italic,
+    })),
+  };
+};
 
 function normalizeDeck(source: Deck): Deck {
   const clone = structuredClone(source);

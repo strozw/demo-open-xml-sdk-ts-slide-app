@@ -33,6 +33,8 @@ export interface TextRunDoc {
   italic?: boolean;
   /** RRGGBB (no `#`). */
   color?: string;
+  /** Typeface name written to `a:latin` / `a:ea`; undefined = theme font. */
+  font?: string;
 }
 
 export interface ParagraphDoc {
@@ -130,4 +132,11 @@ export interface SlideDoc {
 export interface PresentationDoc {
   title: string;
   slides: SlideDoc[];
+  /**
+   * TrueType fonts to embed (`p:embeddedFontLst` + `.fntdata` parts), so
+   * the deck renders with the chosen fonts on machines without them.
+   * PowerPoint requires STATIC TTF instances (regular / bold separately);
+   * variable fonts are silently ignored.
+   */
+  embeddedFonts?: { typeface: string; regularBase64: string; boldBase64: string }[];
 }

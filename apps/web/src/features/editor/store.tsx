@@ -18,6 +18,13 @@ export interface EditorState {
   deck: Deck;
   currentSlideId: string;
   selectedIds: readonly string[];
+  /**
+   * In-place text editing session on the canvas: which object is being
+   * edited and the current caret/selection range (character indices into
+   * the object's text). The inspector reads the range to apply per-
+   * character styling to the selection.
+   */
+  textEditing: { objectId: string; selectionStart: number; selectionEnd: number } | null;
 }
 
 export type EditorAction =
@@ -39,7 +46,10 @@ export type EditorAction =
   | { type: "select-slide"; id: string }
   | { type: "set-slide-background"; color: string }
   | { type: "set-deck-title"; title: string }
-  | { type: "load-deck"; deck: Deck };
+  | { type: "load-deck"; deck: Deck }
+  | { type: "start-text-edit"; id: string }
+  | { type: "end-text-edit" }
+  | { type: "set-text-selection"; start: number; end: number };
 
 function currentSlide(state: EditorState): Slide {
   const slide = state.deck.slides.find((s) => s.id === state.currentSlideId);
@@ -172,6 +182,24 @@ function reorderSiblings(
       ? { ...object, children: reorderSiblings(object.children, id, targetId, position) }
       : object,
   );
+}
+
+export function findObjectDeep(
+  objects: readonly SlideObject[],
+  id: string,
+): SlideObject | undefined {
+  for (const object of objects) {
+    if (object.id === id) {
+      return object;
+    }
+    if (object.type === "group") {
+      const found = findObjectDeep(object.children, id);
+      if (found) {
+        return found;
+      }
+    }
+  }
+  return undefined;
 }
 
 function collectSelectedDeep(
@@ -392,23 +420,74 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
         deck: action.deck,
         currentSlideId: action.deck.slides[0]!.id,
         selectedIds: [],
+        textEditing: null,
       };
+
+    case "start-text-edit":
+      return {
+        ...state,
+        selectedIds: [action.id],
+        textEditing: { objectId: action.id, selectionStart: 0, selectionEnd: 0 },
+      };
+
+    case "end-text-edit":
+      return { ...state, textEditing: null };
+
+    case "set-text-selection":
+      return state.textEditing
+        ? {
+            ...state,
+            textEditing: {
+              ...state.textEditing,
+              selectionStart: action.start,
+              selectionEnd: action.end,
+            },
+          }
+        : state;
 
     default:
       return state;
   }
 }
 
+/**
+ * The editing session only survives while its object is still the sole
+ * selection and still exists on the current slide; any action that breaks
+ * that (selecting elsewhere, deleting, switching slides, ...) ends it.
+ */
+function withTextEditingInvariant(state: EditorState): EditorState {
+  const editing = state.textEditing;
+  if (!editing) {
+    return state;
+  }
+  const soleSelection = state.selectedIds.length === 1 && state.selectedIds[0] === editing.objectId;
+  const target = soleSelection
+    ? findObjectDeep(currentSlide(state).objects, editing.objectId)
+    : undefined;
+  if (!target || (target.type !== "shape" && target.type !== "text")) {
+    return { ...state, textEditing: null };
+  }
+  return state;
+}
+
+function editorReducerWithInvariants(state: EditorState, action: EditorAction): EditorState {
+  return withTextEditingInvariant(editorReducer(state, action));
+}
+
 function createInitialState(): EditorState {
   const deck = createDeck();
-  return { deck, currentSlideId: deck.slides[0]!.id, selectedIds: [] };
+  return { deck, currentSlideId: deck.slides[0]!.id, selectedIds: [], textEditing: null };
 }
 
 const EditorStateContext = React.createContext<EditorState | null>(null);
 const EditorDispatchContext = React.createContext<React.Dispatch<EditorAction> | null>(null);
 
 export function EditorProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = React.useReducer(editorReducer, undefined, createInitialState);
+  const [state, dispatch] = React.useReducer(
+    editorReducerWithInvariants,
+    undefined,
+    createInitialState,
+  );
   return (
     <EditorStateContext.Provider value={state}>
       <EditorDispatchContext.Provider value={dispatch}>{children}</EditorDispatchContext.Provider>

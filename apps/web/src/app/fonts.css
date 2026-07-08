@@ -1,0 +1,37 @@
+/*
+ * Self-hosted Noto Sans/Serif JP (static TTF instances, OFL — see
+ * /fonts/*-OFL.txt). The same files serve both the in-editor display and
+ * the PPTX font embedding (PowerPoint's embedded fonts require static
+ * TrueType, which is why these are TTFs rather than subset woff2).
+ */
+@font-face {
+  font-family: "Noto Sans JP";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/NotoSansJP-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Noto Sans JP";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/NotoSansJP-Bold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Noto Serif JP";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/NotoSerifJP-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Noto Serif JP";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/NotoSerifJP-Bold.ttf") format("truetype");
+}

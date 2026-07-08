@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 
 import "@workspace/ui/globals.css";
+// Self-hosted Noto Sans/Serif JP — shared by the editor display and the
+// PPTX font embedding (see fonts.css / public/fonts).
+import "./fonts.css";
 
 export const metadata: Metadata = {
   title: "PPTX Slide Studio",

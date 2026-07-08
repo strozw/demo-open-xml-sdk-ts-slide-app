@@ -8,11 +8,13 @@
  */
 import { A, DC, P, PmlPackage, R, XElement, type OpenXmlPart } from "openxmlsdkts";
 
+import { fontKeyFromTypeface, type ResolvedCharStyle } from "@/features/editor/fonts";
 import { SHAPE_DEFINITIONS } from "@/features/editor/shape-defs";
 import {
   createId,
   createSlide,
   createTextContent,
+  type CharStyle,
   type ChartObject,
   type Deck,
   type GroupObject,
@@ -97,30 +99,74 @@ function parseTextContent(txBody: XElement | null | undefined): TextContent {
     content.verticalAlign = ANCHOR_FROM_OOXML[anchor];
   }
   const paragraphs = txBody.elements(A.p);
-  content.text = paragraphs
-    .map((paragraph) =>
-      paragraph
-        .elements(A.r)
-        .map((run) => run.element(A.t)?.value ?? "")
-        .join(""),
-    )
-    .join("\n")
-    // The exporter writes a single empty paragraph for empty text.
-    .replace(/^\n?$/, "");
 
   const align = paragraphs[0]?.element(A.pPr)?.attribute("algn")?.value;
   if (align && ALIGN_FROM_OOXML[align]) {
     content.align = ALIGN_FROM_OOXML[align];
   }
-  const runProps = paragraphs[0]?.element(A.r)?.element(A.rPr);
-  if (runProps) {
-    const size = runProps.attribute("sz")?.value;
-    if (size) {
-      content.fontSize = Math.round(Number(size) / 100);
+
+  // The first run defines the base style; every other run's style becomes a
+  // per-character override where it differs (the exporter writes one run per
+  // consecutive same-style segment).
+  const readRunStyle = (rPr: XElement | null | undefined): ResolvedCharStyle => {
+    const size = rPr?.attribute("sz")?.value;
+    return {
+      fontFamily: fontKeyFromTypeface(rPr?.element(A.latin)?.attribute("typeface")?.value),
+      fontSize: size ? Math.round(Number(size) / 100) : content.fontSize,
+      bold: rPr?.attribute("b")?.value === "1",
+      italic: rPr?.attribute("i")?.value === "1",
+      color: (rPr ? solidFillColor(rPr) : undefined) ?? content.color,
+    };
+  };
+
+  const firstRunProps = paragraphs[0]?.element(A.r)?.element(A.rPr);
+  if (firstRunProps) {
+    const base = readRunStyle(firstRunProps);
+    content.fontSize = base.fontSize;
+    content.bold = base.bold;
+    content.italic = base.italic;
+    content.color = base.color;
+    content.fontFamily = base.fontFamily;
+  }
+
+  let text = "";
+  const charStyles: (CharStyle | null)[] = [];
+  paragraphs.forEach((paragraph, paragraphIndex) => {
+    if (paragraphIndex > 0) {
+      text += "\n";
+      charStyles.push(null);
     }
-    content.bold = runProps.attribute("b")?.value === "1";
-    content.italic = runProps.attribute("i")?.value === "1";
-    content.color = solidFillColor(runProps) ?? content.color;
+    for (const run of paragraph.elements(A.r)) {
+      const runText = run.element(A.t)?.value ?? "";
+      const style = readRunStyle(run.element(A.rPr));
+      const override: CharStyle = {};
+      if (style.fontFamily !== content.fontFamily) {
+        // null = explicit theme default (differs from the base family).
+        override.fontFamily = style.fontFamily ?? null;
+      }
+      if (style.fontSize !== content.fontSize) {
+        override.fontSize = style.fontSize;
+      }
+      if (style.color !== content.color) {
+        override.color = style.color;
+      }
+      if (style.bold !== content.bold) {
+        override.bold = style.bold;
+      }
+      if (style.italic !== content.italic) {
+        override.italic = style.italic;
+      }
+      const entry = Object.keys(override).length > 0 ? override : null;
+      text += runText;
+      for (let index = 0; index < runText.length; index += 1) {
+        charStyles.push(entry);
+      }
+    }
+  });
+  // The exporter writes a single empty paragraph for empty text.
+  content.text = text.replace(/^\n?$/, "");
+  if (content.text && charStyles.slice(0, content.text.length).some((style) => style !== null)) {
+    content.charStyles = charStyles.slice(0, content.text.length);
   }
   return content;
 }
