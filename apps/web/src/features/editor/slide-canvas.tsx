@@ -11,7 +11,7 @@ import {
   rectsIntersect,
 } from "./geometry";
 import { fontDefinition, remapCharStyles, segmentByStyle } from "./fonts";
-import { ObjectContent } from "./object-view";
+import { ObjectContent, VERTICAL_ALIGN_TO_FLEX } from "./object-view";
 import {
   findObjectDeep,
   useCurrentSlide,
@@ -97,7 +97,7 @@ export function SlideCanvas() {
 
   const containerRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLDivElement>(null);
-  const editingMirrorRef = React.useRef<HTMLDivElement>(null);
+  const editingTextareaRef = React.useRef<HTMLTextAreaElement>(null);
   const sessionRef = React.useRef<PointerSession>({ mode: "idle" });
   const [scale, setScale] = React.useState(0.6);
   const [marquee, setMarquee] = React.useState<{ start: Point; current: Point } | null>(null);
@@ -412,26 +412,36 @@ export function SlideCanvas() {
           {editingObject ? (
             // WYSIWYG in-place editor: the textarea owns input, caret and
             // selection but draws its text transparent; a mirror div behind
-            // it renders the same text with the real (per-character) fonts.
-            // Both share metrics (padding / size / line-height / wrapping),
-            // so glyphs line up; the selection highlight is semi-transparent
-            // to keep the mirror text readable through it.
+            // it renders the same text with the real (per-character) styles.
+            // The mirror sits in normal flow and defines the text block's
+            // height, the textarea is stretched exactly over it, and the
+            // outer flex box applies the same vertical anchor (top / center
+            // / bottom) as the canvas rendering, so the edited text sits
+            // where it will be displayed.
             <div
-              className="absolute z-20"
+              className="absolute z-20 flex flex-col overflow-hidden px-2 py-1 outline-2 outline-blue-500"
               style={{
                 left: editingObject.x,
                 top: editingObject.y,
                 width: editingObject.width,
                 height: editingObject.height,
+                justifyContent: VERTICAL_ALIGN_TO_FLEX[editingObject.text.verticalAlign],
+              }}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                // Clicking the blank area around the text keeps the editor
+                // focused instead of falling through to the canvas.
+                if (event.target !== editingTextareaRef.current) {
+                  editingTextareaRef.current?.focus();
+                }
               }}
             >
-              <div
-                ref={editingMirrorRef}
-                aria-hidden
-                className="pointer-events-none absolute inset-0 overflow-hidden px-2 py-1"
-                style={{ textAlign: editingObject.text.align, lineHeight: 1.25 }}
-              >
-                <div className="w-full whitespace-pre-wrap break-words">
+              <div className="relative w-full">
+                <div
+                  aria-hidden
+                  className="w-full whitespace-pre-wrap break-words"
+                  style={{ textAlign: editingObject.text.align, lineHeight: 1.25 }}
+                >
                   {segmentByStyle(editingObject.text, editingObject.text.text, 0).map(
                     (segment, index) => (
                       <span
@@ -448,41 +458,39 @@ export function SlideCanvas() {
                       </span>
                     ),
                   )}
+                  {/* Zero-width sentinel: keeps one line box for empty text
+                      and gives a trailing newline its own line height, so
+                      the mirror height always matches the textarea's. */}
+                  <span style={{ fontSize: editingObject.text.fontSize }}>{"​"}</span>
                 </div>
+                <textarea
+                  // Remount per object so autoFocus fires for each session.
+                  key={editingObject.id}
+                  ref={editingTextareaRef}
+                  autoFocus
+                  data-testid="inline-text-editor"
+                  value={editingObject.text.text}
+                  onChange={handleEditingTextChange}
+                  onSelect={handleEditingSelect}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                    if (event.key === "Escape") {
+                      dispatch({ type: "end-text-edit" });
+                    }
+                  }}
+                  className="absolute inset-0 h-full w-full resize-none overflow-hidden rounded-none border-none bg-transparent p-0 text-transparent outline-none selection:bg-blue-500/25 selection:text-transparent"
+                  style={{
+                    fontSize: editingObject.text.fontSize,
+                    caretColor: editingObject.text.color,
+                    textAlign: editingObject.text.align,
+                    fontWeight: editingObject.text.bold ? 700 : 400,
+                    fontStyle: editingObject.text.italic ? "italic" : "normal",
+                    lineHeight: 1.25,
+                    fontFamily: fontDefinition(editingObject.text.fontFamily)?.css,
+                  }}
+                />
               </div>
-              <textarea
-                // Remount per object so autoFocus fires for each session.
-                key={editingObject.id}
-                autoFocus
-                data-testid="inline-text-editor"
-                value={editingObject.text.text}
-                onChange={handleEditingTextChange}
-                onSelect={handleEditingSelect}
-                onScroll={(event) => {
-                  const mirror = editingMirrorRef.current;
-                  if (mirror) {
-                    mirror.scrollTop = event.currentTarget.scrollTop;
-                    mirror.scrollLeft = event.currentTarget.scrollLeft;
-                  }
-                }}
-                onPointerDown={(event) => event.stopPropagation()}
-                onKeyDown={(event) => {
-                  event.stopPropagation();
-                  if (event.key === "Escape") {
-                    dispatch({ type: "end-text-edit" });
-                  }
-                }}
-                className="absolute inset-0 h-full w-full resize-none rounded-none border-none bg-transparent px-2 py-1 text-transparent outline-2 outline-blue-500 selection:bg-blue-500/25 selection:text-transparent"
-                style={{
-                  fontSize: editingObject.text.fontSize,
-                  caretColor: editingObject.text.color,
-                  textAlign: editingObject.text.align,
-                  fontWeight: editingObject.text.bold ? 700 : 400,
-                  fontStyle: editingObject.text.italic ? "italic" : "normal",
-                  lineHeight: 1.25,
-                  fontFamily: fontDefinition(editingObject.text.fontFamily)?.css,
-                }}
-              />
             </div>
           ) : null}
 

@@ -7,7 +7,7 @@ import { fontDefinition, segmentByStyle } from "./fonts";
 import { shapeDefinition } from "./shape-defs";
 import type { GroupObject, ShapeObject, SlideObject, TextContent, TextVAlign } from "./types";
 
-const VERTICAL_ALIGN_TO_FLEX: Record<TextVAlign, CSSProperties["justifyContent"]> = {
+export const VERTICAL_ALIGN_TO_FLEX: Record<TextVAlign, CSSProperties["justifyContent"]> = {
   top: "flex-start",
   center: "center",
   bottom: "flex-end",
