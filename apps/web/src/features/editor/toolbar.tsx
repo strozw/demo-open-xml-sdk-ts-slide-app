@@ -14,6 +14,8 @@ import {
   Spline,
   Trash2,
   Type,
+  Undo2,
+  Redo2,
   Ungroup,
 } from "lucide-react";
 
@@ -41,7 +43,7 @@ import { Separator } from "@workspace/ui/components/separator";
 import { Toggle } from "@workspace/ui/components/toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@workspace/ui/components/tooltip";
 
-import { downloadDeckAsPptx, sanitizeFileName } from "@/lib/export-pptx";
+import { downloadDeckAsPptx, EXPORT_FILE_EXTENSION, sanitizeFileName } from "@/lib/export-pptx";
 import { collectUsedFonts, loadEmbeddedFonts } from "@/lib/font-embed";
 import { deckFromPptxBlob } from "@/lib/import-pptx";
 import {
@@ -51,7 +53,7 @@ import {
   createTextObject,
   SHAPE_DEFINITIONS,
 } from "./shape-defs";
-import { useEditorDispatch, useEditorState, useSelectedObjects } from "./store";
+import { useEditorDispatch, useEditorState, useHistoryInfo, useSelectedObjects } from "./store";
 import type { Deck, SlideObject } from "./types";
 
 function IconAction({
@@ -157,7 +159,9 @@ function ExportDialog({ deck }: { deck: Deck }) {
                 data-testid="export-file-name"
                 onChange={(event) => setFileName(event.target.value)}
               />
-              <span className="shrink-0 text-sm text-muted-foreground">.pptx</span>
+              <span className="shrink-0 text-sm text-muted-foreground">
+                {EXPORT_FILE_EXTENSION}
+              </span>
             </div>
           </div>
           <div className="flex items-center justify-between gap-3">
@@ -234,6 +238,7 @@ export function EditorToolbar() {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
   const selection = useSelectedObjects();
+  const history = useHistoryInfo();
   const [isImporting, startImport] = React.useTransition();
   const [importError, setImportError] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -329,6 +334,25 @@ export function EditorToolbar() {
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <Separator orientation="vertical" className="h-6" />
+
+      <IconAction
+        label="元に戻す (⌘Z)"
+        testId="undo-button"
+        onClick={() => dispatch({ type: "undo" })}
+        disabled={!history.canUndo}
+      >
+        <Undo2 />
+      </IconAction>
+      <IconAction
+        label="やり直し (⇧⌘Z)"
+        testId="redo-button"
+        onClick={() => dispatch({ type: "redo" })}
+        disabled={!history.canRedo}
+      >
+        <Redo2 />
+      </IconAction>
 
       <Separator orientation="vertical" className="h-6" />
 

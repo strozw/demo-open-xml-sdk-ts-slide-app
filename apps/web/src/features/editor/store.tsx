@@ -719,6 +719,125 @@ function editorReducerWithInvariants(state: EditorState, action: EditorAction): 
   return withTextEditingInvariant(editorReducer(state, action));
 }
 
+// ---- Undo / redo -----------------------------------------------------------
+// Only DOCUMENT changes (deck mutations) are recorded; UI state (selection,
+// text-editing session, presentation mode) is not undoable. Consecutive
+// actions of the same kind within a short window coalesce into one undo step
+// so drags and typing undo as a whole gesture, not per event.
+
+/** Actions whose deck changes create an undo step. */
+const UNDOABLE_ACTIONS: ReadonlySet<EditorAction["type"]> = new Set([
+  "add-object",
+  "update-object",
+  "replace-object",
+  "move-selected",
+  "resize-object",
+  "delete-selected",
+  "duplicate-selected",
+  "group-selected",
+  "ungroup-selected",
+  "reorder-selected",
+  "reorder-object",
+  "add-slide",
+  "remove-slide",
+  "set-slide-background",
+  "set-deck-title",
+  "load-deck",
+  "rename-object",
+  "connect-selected",
+] satisfies EditorAction["type"][]);
+
+/** High-frequency actions that coalesce while repeated back-to-back. */
+const COALESCE_ACTIONS: ReadonlySet<EditorAction["type"]> = new Set([
+  "update-object",
+  "move-selected",
+  "resize-object",
+  "set-slide-background",
+  "set-deck-title",
+] satisfies EditorAction["type"][]);
+
+const HISTORY_LIMIT = 100;
+const COALESCE_WINDOW_MS = 600;
+
+interface HistorySnapshot {
+  deck: Deck;
+  currentSlideId: string;
+}
+
+export type StoreAction = EditorAction | { type: "undo" } | { type: "redo" };
+
+interface StoreState {
+  past: HistorySnapshot[];
+  present: EditorState;
+  future: HistorySnapshot[];
+  lastUndoable: { type: string; at: number } | null;
+}
+
+function snapshotOf(state: EditorState): HistorySnapshot {
+  return { deck: state.deck, currentSlideId: state.currentSlideId };
+}
+
+function restoreSnapshot(present: EditorState, snapshot: HistorySnapshot): EditorState {
+  const currentSlideId = snapshot.deck.slides.some((slide) => slide.id === snapshot.currentSlideId)
+    ? snapshot.currentSlideId
+    : snapshot.deck.slides[0]!.id;
+  return {
+    ...present,
+    deck: snapshot.deck,
+    currentSlideId,
+    selectedIds: [],
+    textEditing: null,
+  };
+}
+
+function storeReducer(store: StoreState, action: StoreAction): StoreState {
+  if (action.type === "undo") {
+    const previous = store.past.at(-1);
+    if (!previous) {
+      return store;
+    }
+    return {
+      past: store.past.slice(0, -1),
+      present: restoreSnapshot(store.present, previous),
+      future: [...store.future, snapshotOf(store.present)],
+      lastUndoable: null,
+    };
+  }
+  if (action.type === "redo") {
+    const next = store.future.at(-1);
+    if (!next) {
+      return store;
+    }
+    return {
+      past: [...store.past, snapshotOf(store.present)],
+      present: restoreSnapshot(store.present, next),
+      future: store.future.slice(0, -1),
+      lastUndoable: null,
+    };
+  }
+
+  const present = editorReducerWithInvariants(store.present, action);
+  if (present === store.present) {
+    return store;
+  }
+  // UI-only changes replace the present without touching the history.
+  if (!UNDOABLE_ACTIONS.has(action.type) || present.deck === store.present.deck) {
+    return { ...store, present };
+  }
+  const now = Date.now();
+  const coalesce =
+    store.lastUndoable !== null &&
+    store.lastUndoable.type === action.type &&
+    COALESCE_ACTIONS.has(action.type) &&
+    now - store.lastUndoable.at < COALESCE_WINDOW_MS;
+  return {
+    past: coalesce ? store.past : [...store.past, snapshotOf(store.present)].slice(-HISTORY_LIMIT),
+    present,
+    future: [],
+    lastUndoable: { type: action.type, at: now },
+  };
+}
+
 function createInitialState(): EditorState {
   const deck = createDeck();
   return {
@@ -730,18 +849,30 @@ function createInitialState(): EditorState {
   };
 }
 
+function createInitialStore(): StoreState {
+  return { past: [], present: createInitialState(), future: [], lastUndoable: null };
+}
+
+export interface HistoryInfo {
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
 const EditorStateContext = React.createContext<EditorState | null>(null);
-const EditorDispatchContext = React.createContext<React.Dispatch<EditorAction> | null>(null);
+const EditorDispatchContext = React.createContext<React.Dispatch<StoreAction> | null>(null);
+const HistoryContext = React.createContext<HistoryInfo | null>(null);
 
 export function EditorProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = React.useReducer(
-    editorReducerWithInvariants,
-    undefined,
-    createInitialState,
-  );
+  const [store, dispatch] = React.useReducer(storeReducer, undefined, createInitialStore);
+  const history: HistoryInfo = {
+    canUndo: store.past.length > 0,
+    canRedo: store.future.length > 0,
+  };
   return (
-    <EditorStateContext.Provider value={state}>
-      <EditorDispatchContext.Provider value={dispatch}>{children}</EditorDispatchContext.Provider>
+    <EditorStateContext.Provider value={store.present}>
+      <EditorDispatchContext.Provider value={dispatch}>
+        <HistoryContext.Provider value={history}>{children}</HistoryContext.Provider>
+      </EditorDispatchContext.Provider>
     </EditorStateContext.Provider>
   );
 }
@@ -754,12 +885,20 @@ export function useEditorState(): EditorState {
   return state;
 }
 
-export function useEditorDispatch(): React.Dispatch<EditorAction> {
+export function useEditorDispatch(): React.Dispatch<StoreAction> {
   const dispatch = React.use(EditorDispatchContext);
   if (!dispatch) {
     throw new Error("useEditorDispatch must be used inside <EditorProvider>");
   }
   return dispatch;
+}
+
+export function useHistoryInfo(): HistoryInfo {
+  const history = React.use(HistoryContext);
+  if (!history) {
+    throw new Error("useHistoryInfo must be used inside <EditorProvider>");
+  }
+  return history;
 }
 
 export function useCurrentSlide(): Slide {

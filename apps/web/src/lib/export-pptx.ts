@@ -253,8 +253,11 @@ export function sanitizeFileName(name: string): string {
   return name.replaceAll(/[\\/:*?"<>|]/g, "_").trim() || "presentation";
 }
 
+/** Extension used for exported files (the content is a regular .pptx). */
+export const EXPORT_FILE_EXTENSION = ".my.pptx";
+
 export interface DownloadOptions extends ExportOptions {
-  /** File name without the .pptx extension; defaults to the deck title. */
+  /** File name without the extension; defaults to the deck title. */
   fileName?: string;
 }
 
@@ -264,7 +267,7 @@ export async function downloadDeckAsPptx(deck: Deck, options: DownloadOptions = 
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${sanitizeFileName(fileName ?? deck.title)}.pptx`;
+  anchor.download = `${sanitizeFileName(fileName ?? deck.title)}${EXPORT_FILE_EXTENSION}`;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
