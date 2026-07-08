@@ -33,6 +33,7 @@ export type EditorAction =
   | { type: "group-selected" }
   | { type: "ungroup-selected" }
   | { type: "reorder-selected"; direction: "front" | "back" }
+  | { type: "reorder-object"; id: string; targetId: string; position: "before" | "after" }
   | { type: "add-slide" }
   | { type: "remove-slide"; id: string }
   | { type: "select-slide"; id: string }
@@ -145,6 +146,32 @@ function duplicateSelectedDeep(
     }
   }
   return result;
+}
+
+/**
+ * Moves `id` next to `targetId` within their common sibling list (top level
+ * or a group's children); `position` is in ARRAY order, where later means
+ * more to the front. Pairs living in different parents are left untouched.
+ */
+function reorderSiblings(
+  objects: SlideObject[],
+  id: string,
+  targetId: string,
+  position: "before" | "after",
+): SlideObject[] {
+  const ids = new Set(objects.map((object) => object.id));
+  if (ids.has(id) && ids.has(targetId)) {
+    const dragged = objects.find((object) => object.id === id)!;
+    const without = objects.filter((object) => object.id !== id);
+    const targetIndex = without.findIndex((object) => object.id === targetId);
+    const insertAt = position === "before" ? targetIndex : targetIndex + 1;
+    return [...without.slice(0, insertAt), dragged, ...without.slice(insertAt)];
+  }
+  return objects.map((object) =>
+    object.type === "group"
+      ? { ...object, children: reorderSiblings(object.children, id, targetId, position) }
+      : object,
+  );
 }
 
 function collectSelectedDeep(
@@ -296,6 +323,16 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       }
       const next = patchSlide(state, (s) => ({ ...s, objects: nextObjects }));
       return { ...next, selectedIds: releasedIds };
+    }
+
+    case "reorder-object": {
+      if (action.id === action.targetId) {
+        return state;
+      }
+      return patchSlide(state, (slide) => ({
+        ...slide,
+        objects: reorderSiblings(slide.objects, action.id, action.targetId, action.position),
+      }));
     }
 
     case "reorder-selected": {

@@ -8,6 +8,28 @@ import { cn } from "@workspace/ui/lib/utils";
 import { useCurrentSlide, useEditorDispatch, useEditorState } from "./store";
 import type { SlideObject } from "./types";
 
+type DropEdge = "top" | "bottom";
+
+interface DragSource {
+  id: string;
+  /** null = top-level object; otherwise the enclosing group's id. */
+  parentId: string | null;
+}
+
+/**
+ * Drag & drop state and handlers shared by every tree row. Reordering is
+ * restricted to siblings (rows with the same parent), so dragging never
+ * re-parents an object in or out of a group.
+ */
+interface TreeDnd {
+  dragging: DragSource | null;
+  dropTarget: { id: string; edge: DropEdge } | null;
+  onDragStart: (event: React.DragEvent, source: DragSource) => void;
+  onDragOver: (event: React.DragEvent, target: DragSource) => void;
+  onDrop: (event: React.DragEvent, target: DragSource) => void;
+  onDragEnd: () => void;
+}
+
 function ObjectIcon({ object }: { object: SlideObject }) {
   switch (object.type) {
     case "shape":
@@ -23,31 +45,50 @@ function ObjectIcon({ object }: { object: SlideObject }) {
   }
 }
 
+/** Front-most objects render first: the tree lists them top = front. */
+function frontToBack(objects: readonly SlideObject[]): readonly SlideObject[] {
+  return objects.toReversed();
+}
+
 function TreeNode({
   object,
+  parentId,
   depth,
   collapsed,
   onToggleCollapse,
+  dnd,
 }: {
   object: SlideObject;
+  parentId: string | null;
   depth: number;
   collapsed: ReadonlySet<string>;
   onToggleCollapse: (id: string) => void;
+  dnd: TreeDnd;
 }) {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
   const isSelected = state.selectedIds.includes(object.id);
   const isGroup = object.type === "group";
   const isCollapsed = collapsed.has(object.id);
+  const isDragging = dnd.dragging?.id === object.id;
+  const dropEdge = dnd.dropTarget?.id === object.id ? dnd.dropTarget.edge : null;
 
   return (
     <>
       <button
         type="button"
         data-testid={`object-node-${object.id}`}
+        draggable
+        onDragStart={(event) => dnd.onDragStart(event, { id: object.id, parentId })}
+        onDragOver={(event) => dnd.onDragOver(event, { id: object.id, parentId })}
+        onDrop={(event) => dnd.onDrop(event, { id: object.id, parentId })}
+        onDragEnd={dnd.onDragEnd}
         className={cn(
           "flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-xs transition-colors",
           isSelected ? "bg-primary/10 font-medium text-primary" : "hover:bg-muted",
+          isDragging && "opacity-50",
+          dropEdge === "top" && "shadow-[0_-2px_0_0_var(--color-primary)]",
+          dropEdge === "bottom" && "shadow-[0_2px_0_0_var(--color-primary)]",
         )}
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={(event) =>
@@ -92,13 +133,15 @@ function TreeNode({
         ) : null}
       </button>
       {isGroup && !isCollapsed
-        ? object.children.map((child) => (
+        ? frontToBack(object.children).map((child) => (
             <TreeNode
               key={child.id}
               object={child}
+              parentId={object.id}
               depth={depth + 1}
               collapsed={collapsed}
               onToggleCollapse={onToggleCollapse}
+              dnd={dnd}
             />
           ))
         : null}
@@ -107,13 +150,17 @@ function TreeNode({
 }
 
 /**
- * Tree view of the focused slide's objects. Groups nest and can be
- * collapsed; clicking a row selects the object (Shift+click adds to the
- * selection, mirroring the canvas).
+ * Tree view of the focused slide's objects, listed front-to-back. Groups
+ * nest and can be collapsed; clicking a row selects the object (Shift+click
+ * adds to the selection). Rows can be dragged over a sibling to change the
+ * stacking order: dropping higher in the list brings the object forward.
  */
 export function ObjectList() {
   const slide = useCurrentSlide();
+  const dispatch = useEditorDispatch();
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(new Set());
+  const [dragging, setDragging] = React.useState<DragSource | null>(null);
+  const [dropTarget, setDropTarget] = React.useState<{ id: string; edge: DropEdge } | null>(null);
 
   const toggleCollapse = (id: string) => {
     setCollapsed((previous) => {
@@ -127,11 +174,58 @@ export function ObjectList() {
     });
   };
 
+  const clearDrag = () => {
+    setDragging(null);
+    setDropTarget(null);
+  };
+
+  const dnd: TreeDnd = {
+    dragging,
+    dropTarget,
+    onDragStart: (event, source) => {
+      event.dataTransfer.effectAllowed = "move";
+      // Some browsers require data for a drag to start.
+      event.dataTransfer.setData("text/plain", source.id);
+      setDragging(source);
+    },
+    onDragOver: (event, target) => {
+      if (!dragging || dragging.id === target.id || dragging.parentId !== target.parentId) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const rect = event.currentTarget.getBoundingClientRect();
+      const edge: DropEdge = event.clientY < rect.top + rect.height / 2 ? "top" : "bottom";
+      setDropTarget((previous) =>
+        previous?.id === target.id && previous.edge === edge ? previous : { id: target.id, edge },
+      );
+    },
+    onDrop: (event, target) => {
+      if (!dragging || dragging.id === target.id || dragging.parentId !== target.parentId) {
+        return;
+      }
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const edge: DropEdge = event.clientY < rect.top + rect.height / 2 ? "top" : "bottom";
+      // The list renders front-to-back (reversed array order), so dropping
+      // ABOVE the target means "further to the front" = AFTER it in the
+      // slide's object array.
+      dispatch({
+        type: "reorder-object",
+        id: dragging.id,
+        targetId: target.id,
+        position: edge === "top" ? "after" : "before",
+      });
+      clearDrag();
+    },
+    onDragEnd: clearDrag,
+  };
+
   return (
     <div className="flex h-full flex-col" data-testid="object-list">
       <div className="flex items-center justify-between px-3 py-2">
         <h2 className="text-sm font-semibold">オブジェクト</h2>
-        <span className="text-[10px] text-muted-foreground">背面 → 前面</span>
+        <span className="text-[10px] text-muted-foreground">前面 → 背面</span>
       </div>
       <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-4">
         {slide.objects.length === 0 ? (
@@ -139,13 +233,15 @@ export function ObjectList() {
             このスライドにはまだオブジェクトがありません。
           </p>
         ) : (
-          slide.objects.map((object) => (
+          frontToBack(slide.objects).map((object) => (
             <TreeNode
               key={object.id}
               object={object}
+              parentId={null}
               depth={0}
               collapsed={collapsed}
               onToggleCollapse={toggleCollapse}
+              dnd={dnd}
             />
           ))
         )}
