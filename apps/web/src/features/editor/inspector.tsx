@@ -7,6 +7,7 @@ import {
   AlignLeft,
   AlignRight,
   ArrowDownToLine,
+  ArrowLeftRight,
   ArrowUpToLine,
   FoldVertical,
   Plus,
@@ -818,6 +819,15 @@ function ConnectorFields({ object }: { object: ConnectorObject }) {
         <ConnectorEndpointField label="始点" connector={object} endpoint="start" />
         <ConnectorEndpointField label="終点" connector={object} endpoint="end" />
       </div>
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full"
+        data-testid="connector-swap"
+        onClick={() => patch({ start: object.end, end: object.start })}
+      >
+        <ArrowLeftRight /> 始点と終点を反転
+      </Button>
       <div className="grid grid-cols-2 gap-2">
         <Field label="線の太さ (px)">
           <NumberInput
