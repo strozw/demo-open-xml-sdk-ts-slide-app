@@ -1,0 +1,25 @@
+{
+  "name": "demo-open-xml-sdk-ts-slide-app",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "typecheck": "turbo run typecheck",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "doctor": "react-doctor apps/web"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.57.0",
+    "oxlint": "^1.73.0",
+    "react-doctor": "^0.7.1",
+    "turbo": "^2.10.3",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "react-hooks", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "env": {
+    "browser": true,
+    "es2024": true
+  },
+  "rules": {
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "warn",
+    "react/react-in-jsx-scope": "off",
+    "no-unused-vars": "warn",
+    "no-underscore-dangle": "off"
+  },
+  "ignorePatterns": ["**/node_modules/**", "**/.next/**", "**/.turbo/**", "**/dist/**"]
+}
