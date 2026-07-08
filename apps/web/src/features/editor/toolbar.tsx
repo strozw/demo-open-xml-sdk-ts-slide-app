@@ -7,6 +7,7 @@ import {
   Download,
   FolderOpen,
   Group,
+  Image as ImageIcon,
   Layers,
   LoaderCircle,
   SendToBack,
@@ -49,12 +50,13 @@ import { deckFromPptxBlob } from "@/lib/import-pptx";
 import {
   CHART_DEFINITIONS,
   createChartObject,
+  createImageObject,
   createShapeObject,
   createTextObject,
   SHAPE_DEFINITIONS,
 } from "./shape-defs";
 import { useEditorDispatch, useEditorState, useHistoryInfo, useSelectedObjects } from "./store";
-import type { Deck, SlideObject } from "./types";
+import type { Deck, ImageObject, SlideObject } from "./types";
 
 function IconAction({
   label,
@@ -242,11 +244,50 @@ export function EditorToolbar() {
   const [isImporting, startImport] = React.useTransition();
   const [importError, setImportError] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const imageInputRef = React.useRef<HTMLInputElement>(null);
+  const [imageError, setImageError] = React.useState<string | null>(null);
 
   const canGroup = selection.length >= 2;
   const canUngroup = selection.some((object) => object.type === "group");
   const canConnect =
     selection.length === 2 && selection.every((object) => object.type !== "connector");
+
+  const handleInsertImage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // Reset so choosing the same file again re-fires onChange.
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    setImageError(null);
+    const mimeType = file.type as ImageObject["mimeType"];
+    if (!["image/png", "image/jpeg", "image/gif"].includes(mimeType)) {
+      setImageError("PNG / JPEG / GIF 画像のみ挿入できます");
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const dataUrl = String(reader.result);
+      const dataBase64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+      // Natural size determines the initial frame (fit into the canvas).
+      const probe = new Image();
+      probe.addEventListener("load", () => {
+        dispatch({
+          type: "add-object",
+          object: createImageObject({
+            mimeType,
+            dataBase64,
+            naturalWidth: probe.naturalWidth,
+            naturalHeight: probe.naturalHeight,
+          }),
+        });
+      });
+      probe.addEventListener("error", () => setImageError("画像を読み込めませんでした"));
+      probe.src = dataUrl;
+    });
+    reader.addEventListener("error", () => setImageError("画像を読み込めませんでした"));
+    reader.readAsDataURL(file);
+  };
 
   const handleImportFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -310,6 +351,23 @@ export function EditorToolbar() {
         onClick={() => dispatch({ type: "add-object", object: createTextObject() })}
       >
         <Type /> テキスト
+      </Button>
+
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif"
+        className="hidden"
+        onChange={handleInsertImage}
+        data-testid="add-image-input"
+      />
+      <Button
+        variant="outline"
+        size="sm"
+        data-testid="add-image"
+        onClick={() => imageInputRef.current?.click()}
+      >
+        <ImageIcon /> 画像
       </Button>
 
       <DropdownMenu>
@@ -404,6 +462,11 @@ export function EditorToolbar() {
       </IconAction>
 
       <div className="ml-auto flex items-center gap-3">
+        {imageError ? (
+          <p className="text-sm text-destructive" role="alert">
+            {imageError}
+          </p>
+        ) : null}
         {importError ? (
           <p className="text-sm text-destructive" role="alert">
             読み込みに失敗しました: {importError}

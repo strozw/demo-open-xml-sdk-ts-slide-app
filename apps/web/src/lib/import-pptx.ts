@@ -20,6 +20,7 @@ import {
   type ConnectorObject,
   type Deck,
   type GroupObject,
+  type ImageObject,
   type LeafObject,
   type ShapeKind,
   type ShapeObject,
@@ -31,7 +32,7 @@ import {
   type TextVAlign,
 } from "@/features/editor/types";
 
-import { base64ToBytes } from "./binary";
+import { base64ToBytes, bytesToBase64 } from "./binary";
 import { readPngTextChunk } from "./png-text";
 import { EMU_PER_PX } from "./pptx";
 import { PNG_TEXT_KEYWORD, readChartMeta } from "./pptx/chart-meta";
@@ -42,6 +43,23 @@ const UNSUPPORTED_FILE = "このアプリで書き出した PPTX ファイルの
 
 function emuToPx(value: string | undefined): number {
   return Math.round(Number(value ?? 0) / EMU_PER_PX);
+}
+
+/**
+ * openxmlsdkts' `getTargetFullName` joins relative targets without
+ * collapsing `..` (a slide's `../media/x.png` becomes
+ * `/ppt/slides/../media/x.png`), so part lookups need a normalized URI.
+ */
+function normalizePartUri(uri: string): string {
+  const segments: string[] = [];
+  for (const segment of uri.split("/")) {
+    if (segment === "..") {
+      segments.pop();
+    } else if (segment !== "" && segment !== ".") {
+      segments.push(segment);
+    }
+  }
+  return `/${segments.join("/")}`;
 }
 
 const PRST_TO_SHAPE_KIND = new Map<string, ShapeKind>(
@@ -265,34 +283,61 @@ async function readPartBytes(part: OpenXmlPart): Promise<Uint8Array> {
   return (data as { async(type: "uint8array"): Promise<Uint8Array> }).async("uint8array");
 }
 
-async function parseChartPic(
+const MIME_FROM_CONTENT_TYPE: Record<string, ImageObject["mimeType"]> = {
+  "image/png": "image/png",
+  "image/jpeg": "image/jpeg",
+  "image/gif": "image/gif",
+};
+
+/**
+ * `p:pic` is either a rasterized chart (it carries re-edit metadata in its
+ * extLst or PNG chunk) or a plain inserted image.
+ */
+async function parsePic(
   pic: XElement,
   relTargets: ReadonlyMap<string, string>,
   pkg: PmlPackage,
   registry: ShapeIdRegistry,
-): Promise<ChartObject> {
+): Promise<ChartObject | ImageObject> {
   const cNvPr = pic.element(P.nvPicPr)?.element(P.cNvPr);
-  const name = cNvPr?.attribute("name")?.value ?? "グラフ画像";
+  const name = cNvPr?.attribute("name")?.value ?? "画像";
   const frame = parseXfrm(pic.element(P.spPr)?.element(A.xfrm), `画像「${name}」`);
 
+  const embedId = pic.element(P.blipFill)?.element(A.blip)?.attribute(R.embed)?.value;
+  const target = embedId ? relTargets.get(embedId) : undefined;
+  const mediaPart = target ? pkg.getPartByUri(target) : undefined;
+
   let meta = cNvPr && readChartMeta(cNvPr);
-  if (!meta) {
-    // Fallback: the PNG itself carries the same JSON in an iTXt chunk.
-    const embedId = pic.element(P.blipFill)?.element(A.blip)?.attribute(R.embed)?.value;
-    const target = embedId ? relTargets.get(embedId) : undefined;
-    const mediaPart = target ? pkg.getPartByUri(target) : undefined;
-    if (mediaPart) {
-      meta = readPngTextChunk(await readPartBytes(mediaPart), PNG_TEXT_KEYWORD);
-    }
+  if (!meta && mediaPart && mediaPart.getContentType() === "image/png") {
+    // Chart fallback: the PNG itself carries the same JSON in an iTXt chunk.
+    meta = readPngTextChunk(await readPartBytes(mediaPart), PNG_TEXT_KEYWORD);
   }
-  if (!meta) {
+  if (meta) {
+    const chart = chartFromMeta(meta, frame, `画像「${name}」`);
+    registerShapeId(registry, cNvPr, chart.id);
+    return { ...chart, exportAsImage: true };
+  }
+
+  // Plain image: restore the bytes from the media part.
+  if (!mediaPart) {
+    throw new PptxImportError(`${UNSUPPORTED_FILE} (画像「${name}」のメディアがありません)`);
+  }
+  const mimeType = MIME_FROM_CONTENT_TYPE[mediaPart.getContentType() ?? ""];
+  if (!mimeType) {
     throw new PptxImportError(
-      `${UNSUPPORTED_FILE} (画像「${name}」に再編集用メタデータがありません)`,
+      `${UNSUPPORTED_FILE} (未対応の画像形式: ${mediaPart.getContentType() ?? "不明"})`,
     );
   }
-  const chart = chartFromMeta(meta, frame, `画像「${name}」`);
-  registerShapeId(registry, cNvPr, chart.id);
-  return { ...chart, exportAsImage: true };
+  const id = createId("object");
+  registerShapeId(registry, cNvPr, id);
+  return {
+    id,
+    name,
+    type: "image",
+    ...frame,
+    mimeType,
+    dataBase64: bytesToBase64(await readPartBytes(mediaPart)),
+  };
 }
 
 /**
@@ -367,7 +412,7 @@ async function parseLeaf(
     return parseChartFrame(element, registry);
   }
   if (element.name === P.pic) {
-    return parseChartPic(element, relTargets, pkg, registry);
+    return parsePic(element, relTargets, pkg, registry);
   }
   throw new PptxImportError(`${UNSUPPORTED_FILE} (未対応の要素: ${element.name.localName})`);
 }
@@ -456,7 +501,7 @@ export async function deckFromPptxBlob(blob: Blob): Promise<Deck> {
   const presentationRels = new Map(
     (await pkg.getRelationshipsForPart(presentationPart)).map((rel) => [
       rel.getId(),
-      rel.getTargetFullName(),
+      normalizePartUri(rel.getTargetFullName()),
     ]),
   );
   const presentationRoot = (await presentationPart.getXDocument()).root!;
@@ -476,7 +521,7 @@ export async function deckFromPptxBlob(blob: Blob): Promise<Deck> {
     const relTargets = new Map(
       (await pkg.getRelationshipsForPart(slidePart)).map((rel) => [
         rel.getId(),
-        rel.getTargetFullName(),
+        normalizePartUri(rel.getTargetFullName()),
       ]),
     );
     slides.push(await parseSlide(slidePart, relTargets, pkg));

@@ -7,6 +7,7 @@ import type {
   ConnectorObject,
   Deck,
   GroupObject,
+  ImageObject,
   LeafObject,
   ShapeObject,
   TextContent,
@@ -24,6 +25,7 @@ import type {
   ConnectorDoc,
   FrameEmu,
   GroupDoc,
+  ImageDoc,
   ParagraphAlign,
   PresentationDoc,
   ShapeDoc,
@@ -161,7 +163,21 @@ async function chartChild(object: ChartObject, options: ExportOptions): Promise<
   };
 }
 
-async function leafChild(object: LeafObject, options: ExportOptions): Promise<ShapeDoc | ChartDoc> {
+function imageChild(object: ImageObject): ImageDoc {
+  return {
+    type: "image",
+    refId: object.id,
+    name: object.name,
+    frame: frame(object),
+    mimeType: object.mimeType,
+    dataBase64: object.dataBase64,
+  };
+}
+
+async function leafChild(
+  object: LeafObject,
+  options: ExportOptions,
+): Promise<ShapeDoc | ChartDoc | ImageDoc> {
   switch (object.type) {
     case "shape":
       return shapeChild(object);
@@ -169,6 +185,8 @@ async function leafChild(object: LeafObject, options: ExportOptions): Promise<Sh
       return textChild(object);
     case "chart":
       return chartChild(object, options);
+    case "image":
+      return imageChild(object);
   }
 }
 

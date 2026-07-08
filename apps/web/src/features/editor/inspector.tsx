@@ -941,6 +941,7 @@ function SingleObjectFields({ object }: { object: SlideObject }) {
         {object.type === "chart" && chartLabel(object.chartType)}
         {object.type === "group" && `グループ (${object.children.length} 個)`}
         {object.type === "connector" && "コネクタ"}
+        {object.type === "image" && "画像"}
       </h3>
       <NameField object={object} />
       {/* Connector geometry is derived from its endpoints. */}

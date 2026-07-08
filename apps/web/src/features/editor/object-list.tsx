@@ -1,7 +1,15 @@
 "use client";
 
 import * as React from "react";
-import { BarChart3, ChevronRight, Group, Shapes, Spline, Type } from "lucide-react";
+import {
+  BarChart3,
+  ChevronRight,
+  Group,
+  Image as ImageIcon,
+  Shapes,
+  Spline,
+  Type,
+} from "lucide-react";
 
 import {
   ContextMenu,
@@ -48,6 +56,8 @@ function ObjectIcon({ object }: { object: SlideObject }) {
       return <Group className="size-3.5 shrink-0" aria-hidden />;
     case "connector":
       return <Spline className="size-3.5 shrink-0" aria-hidden />;
+    case "image":
+      return <ImageIcon className="size-3.5 shrink-0" aria-hidden />;
     default:
       return null;
   }

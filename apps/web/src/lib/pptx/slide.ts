@@ -9,6 +9,7 @@ import type {
   ChartDoc,
   ConnectorDoc,
   GroupDoc,
+  ImageDoc,
   ShapeDoc,
   SlideChildDoc,
   SlideDoc,
@@ -18,8 +19,8 @@ import { attr, offExt, solidFill, xfrm, xmlnsDecl } from "./xml";
 
 const CHART_GRAPHIC_URI = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 
-/** Relationship id (on the slide part) per chart, in encounter order. */
-export type ChartRelIds = ReadonlyMap<ChartDoc, string>;
+/** Relationship id (on the slide part) per chart / image, in encounter order. */
+export type MediaRelIds = ReadonlyMap<ChartDoc | ImageDoc, string>;
 
 /**
  * Numeric shape ids (`p:cNvPr@id`, unique per slide, 1 is the root group)
@@ -230,7 +231,30 @@ function connectorElement(connector: ConnectorDoc, id: number, shapeIds: ShapeId
   );
 }
 
-function groupElement(group: GroupDoc, chartRelIds: ChartRelIds, shapeIds: ShapeIds): XElement {
+/** Plain picture (`p:pic`, no re-edit metadata — unlike image charts). */
+function imageElement(image: ImageDoc, relId: string, id: number): XElement {
+  return new XElement(
+    P.pic,
+    nonVisualProps(
+      P.nvPicPr,
+      new XElement(P.cNvPicPr, new XElement(A.picLocks, attr("noChangeAspect", 1))),
+      id,
+      image.name,
+    ),
+    new XElement(
+      P.blipFill,
+      new XElement(A.blip, attr(R.embed, relId)),
+      new XElement(A.stretch, new XElement(A.fillRect)),
+    ),
+    new XElement(
+      P.spPr,
+      xfrm(image.frame),
+      new XElement(A.prstGeom, attr("prst", "rect"), new XElement(A.avLst)),
+    ),
+  );
+}
+
+function groupElement(group: GroupDoc, mediaRelIds: MediaRelIds, shapeIds: ShapeIds): XElement {
   return new XElement(
     P.grpSp,
     nonVisualProps(
@@ -241,13 +265,13 @@ function groupElement(group: GroupDoc, chartRelIds: ChartRelIds, shapeIds: Shape
     ),
     // chOff/chExt == off/ext: children keep absolute slide coordinates.
     new XElement(P.grpSpPr, xfrm(group.frame, group.frame)),
-    group.children.map((child) => childElement(child, chartRelIds, shapeIds)),
+    group.children.map((child) => childElement(child, mediaRelIds, shapeIds)),
   );
 }
 
 function childElement(
   child: SlideChildDoc,
-  chartRelIds: ChartRelIds,
+  mediaRelIds: MediaRelIds,
   shapeIds: ShapeIds,
 ): XElement {
   const id = shapeIds.byNode.get(child)!;
@@ -256,16 +280,18 @@ function childElement(
       return shapeElement(child, id);
     case "chart":
       return child.image
-        ? picElement(child, chartRelIds.get(child)!, id)
-        : chartFrameElement(child, chartRelIds.get(child)!, id);
+        ? picElement(child, mediaRelIds.get(child)!, id)
+        : chartFrameElement(child, mediaRelIds.get(child)!, id);
     case "group":
-      return groupElement(child, chartRelIds, shapeIds);
+      return groupElement(child, mediaRelIds, shapeIds);
     case "connector":
       return connectorElement(child, id, shapeIds);
+    case "image":
+      return imageElement(child, mediaRelIds.get(child)!, id);
   }
 }
 
-export function buildSlide(slide: SlideDoc, chartRelIds: ChartRelIds): XDocument {
+export function buildSlide(slide: SlideDoc, mediaRelIds: MediaRelIds): XDocument {
   const shapeIds = assignShapeIds(slide.children);
   return new XDocument(
     new XDeclaration("1.0", "UTF-8", "yes"),
@@ -292,7 +318,7 @@ export function buildSlide(slide: SlideDoc, chartRelIds: ChartRelIds): XDocument
             new XElement(P.nvPr),
           ),
           new XElement(P.grpSpPr),
-          slide.children.map((child) => childElement(child, chartRelIds, shapeIds)),
+          slide.children.map((child) => childElement(child, mediaRelIds, shapeIds)),
         ),
       ),
       new XElement(P.clrMapOvr, new XElement(A.masterClrMapping)),
@@ -300,16 +326,19 @@ export function buildSlide(slide: SlideDoc, chartRelIds: ChartRelIds): XDocument
   );
 }
 
-/** Charts on the slide (including inside groups), in document order. */
-export function collectCharts(slide: SlideDoc): ChartDoc[] {
+/** Charts and images on the slide (including inside groups), in order. */
+export function collectMedia(slide: SlideDoc): { charts: ChartDoc[]; images: ImageDoc[] } {
   const charts: ChartDoc[] = [];
+  const images: ImageDoc[] = [];
   const visit = (child: SlideChildDoc): void => {
     if (child.type === "chart") {
       charts.push(child);
+    } else if (child.type === "image") {
+      images.push(child);
     } else if (child.type === "group") {
       child.children.forEach(visit);
     }
   };
   slide.children.forEach(visit);
-  return charts;
+  return { charts, images };
 }

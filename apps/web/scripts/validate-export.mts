@@ -230,6 +230,18 @@ const deck: Deck = {
           style: 3,
           exportAsImage: true,
         },
+        {
+          // Plain inserted image (no re-edit metadata, unlike image charts).
+          id: "img1",
+          name: "Logo",
+          type: "image",
+          x: 100,
+          y: 500,
+          width: 120,
+          height: 90,
+          mimeType: "image/png",
+          dataBase64: ONE_BY_ONE_PNG_BASE64,
+        },
       ],
     },
     {
@@ -640,8 +652,8 @@ assert.equal(
   );
   assert.equal(
     forcedNames.filter((name) => /ppt\/media\/image\d+\.png/.test(name)).length,
-    6,
-    "forced export renders all six charts as images",
+    7,
+    "forced export renders all six charts as images (plus the inserted image)",
   );
 }
 
@@ -684,6 +696,19 @@ const pngEntry = new Uint8Array(entries.get("ppt/media/image1.png")!);
 const pngMeta = readPngTextChunk(pngEntry, PNG_TEXT_KEYWORD);
 assert.ok(pngMeta, "PNG iTXt metadata missing");
 assert.deepEqual(JSON.parse(pngMeta), imageChart, "PNG metadata restores the chart object");
+
+// ---- Inserted image (plain p:pic, no re-edit metadata) --------------------
+assert.ok(names.includes("ppt/media/image2.png"), "inserted image media part missing");
+assert.equal(
+  (slide2.match(/<p:pic>/g) ?? []).length,
+  2,
+  "slide 2 has the chart image and the inserted image",
+);
+assert.equal(
+  entries.get("ppt/media/image2.png")!.toString("base64"),
+  ONE_BY_ONE_PNG_BASE64,
+  "inserted image bytes round-trip",
+);
 
 // Round trip: the generated package opens with openxmlsdkts itself and the
 // presentation part resolves through the officeDocument relationship.

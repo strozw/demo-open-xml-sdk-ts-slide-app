@@ -26,10 +26,20 @@ import {
 } from "openxmlsdkts";
 
 import { buildChart } from "./chart";
-import { buildSlide, collectCharts } from "./slide";
+import { buildSlide, collectMedia } from "./slide";
 import { buildTheme } from "./theme";
-import { SLIDE_CX, SLIDE_CY, type ChartDoc, type PresentationDoc } from "./types";
+import { SLIDE_CX, SLIDE_CY, type ChartDoc, type ImageDoc, type PresentationDoc } from "./types";
 import { attr, xmlnsDecl, xmlnsDefault } from "./xml";
+
+/** Media part extension / content type per supported image mime type. */
+export const IMAGE_MEDIA_INFO: Record<
+  ImageDoc["mimeType"],
+  { extension: string; contentType: string }
+> = {
+  "image/png": { extension: "png", contentType: ContentType.png },
+  "image/jpeg": { extension: "jpeg", contentType: ContentType.jpeg },
+  "image/gif": { extension: "gif", contentType: ContentType.gif },
+};
 
 const EMPTY_FLAT_OPC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"></pkg:package>`;
@@ -262,24 +272,27 @@ export async function generatePresentation(doc: PresentationDoc): Promise<Blob> 
       },
     ];
 
-    const chartRelIds = new Map<ChartDoc, string>();
-    for (const chart of collectCharts(slide)) {
+    const mediaRelIds = new Map<ChartDoc | ImageDoc, string>();
+    const addImagePart = (mimeType: ImageDoc["mimeType"], dataBase64: string): string => {
+      imageNumber += 1;
+      const { extension, contentType } = IMAGE_MEDIA_INFO[mimeType];
       const relId = `rId${slideRels.length + 1}`;
+      pkg.addPart(`/ppt/media/image${imageNumber}.${extension}`, contentType, "base64", dataBase64);
+      slideRels.push({
+        id: relId,
+        type: RelationshipType.image,
+        target: `../media/image${imageNumber}.${extension}`,
+      });
+      return relId;
+    };
+
+    const media = collectMedia(slide);
+    for (const chart of media.charts) {
       if (chart.image) {
-        imageNumber += 1;
-        pkg.addPart(
-          `/ppt/media/image${imageNumber}.png`,
-          ContentType.png,
-          "base64",
-          chart.image.pngBase64,
-        );
-        slideRels.push({
-          id: relId,
-          type: RelationshipType.image,
-          target: `../media/image${imageNumber}.png`,
-        });
+        mediaRelIds.set(chart, addImagePart("image/png", chart.image.pngBase64));
       } else {
         chartNumber += 1;
+        const relId = `rId${slideRels.length + 1}`;
         pkg.addPart(
           `/ppt/charts/chart${chartNumber}.xml`,
           ContentType.chart,
@@ -291,11 +304,14 @@ export async function generatePresentation(doc: PresentationDoc): Promise<Blob> 
           type: RelationshipType.chart,
           target: `../charts/chart${chartNumber}.xml`,
         });
+        mediaRelIds.set(chart, relId);
       }
-      chartRelIds.set(chart, relId);
+    }
+    for (const image of media.images) {
+      mediaRelIds.set(image, addImagePart(image.mimeType, image.dataBase64));
     }
 
-    pkg.addPart(slideUri, ContentType.slide, "xml", buildSlide(slide, chartRelIds));
+    pkg.addPart(slideUri, ContentType.slide, "xml", buildSlide(slide, mediaRelIds));
     await addRels(slideUri, slideRels);
   }
 

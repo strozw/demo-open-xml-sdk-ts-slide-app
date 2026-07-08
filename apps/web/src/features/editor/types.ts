@@ -119,6 +119,14 @@ export interface ChartObject extends BaseObject {
   exportAsImage?: boolean;
 }
 
+/** Raster image placed on a slide (PNG / JPEG / GIF). */
+export interface ImageObject extends BaseObject {
+  type: "image";
+  mimeType: "image/png" | "image/jpeg" | "image/gif";
+  /** Raw image bytes, base64-encoded (no `data:` prefix). */
+  dataBase64: string;
+}
+
 export type ConnectorKind = "straight" | "bent";
 
 /** Cardinal connection sites shared by every shape (bounding-box midpoints). */
@@ -166,7 +174,7 @@ export interface GroupObject extends BaseObject {
   children: SlideObject[];
 }
 
-export type LeafObject = ShapeObject | TextObject | ChartObject;
+export type LeafObject = ShapeObject | TextObject | ChartObject | ImageObject;
 export type SlideObject = LeafObject | GroupObject | ConnectorObject;
 
 export interface Slide {

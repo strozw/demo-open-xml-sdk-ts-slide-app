@@ -3,6 +3,7 @@ import {
   createTextContent,
   type ChartKind,
   type ChartObject,
+  type ImageObject,
   type ShapeKind,
   type ShapeObject,
   type TextObject,
@@ -133,6 +134,36 @@ export function createTextObject(): TextObject {
       color: "#1a1a2e",
       fontSize: 24,
     }),
+  };
+}
+
+let imageCount = 0;
+
+/** Fits the image into the canvas (max 480×360) preserving aspect ratio. */
+export function createImageObject(input: {
+  mimeType: ImageObject["mimeType"];
+  dataBase64: string;
+  naturalWidth: number;
+  naturalHeight: number;
+}): ImageObject {
+  imageCount += 1;
+  const maxWidth = 480;
+  const maxHeight = 360;
+  const ratio = Math.min(
+    1,
+    maxWidth / Math.max(1, input.naturalWidth),
+    maxHeight / Math.max(1, input.naturalHeight),
+  );
+  return {
+    id: createId("object"),
+    name: `画像 ${imageCount}`,
+    type: "image",
+    x: 200 + (imageCount % 4) * 40,
+    y: 140 + (imageCount % 4) * 30,
+    width: Math.max(24, Math.round(input.naturalWidth * ratio)),
+    height: Math.max(24, Math.round(input.naturalHeight * ratio)),
+    mimeType: input.mimeType,
+    dataBase64: input.dataBase64,
   };
 }
 

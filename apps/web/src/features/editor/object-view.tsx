@@ -8,6 +8,7 @@ import { shapeDefinition } from "./shape-defs";
 import type {
   ConnectorObject,
   GroupObject,
+  ImageObject,
   ShapeObject,
   SlideObject,
   TextContent,
@@ -182,9 +183,24 @@ export function ObjectContent({
       return <GroupContent group={object} hideTextObjectId={hideTextObjectId} />;
     case "connector":
       return <ConnectorView object={object} />;
+    case "image":
+      return <ImageView object={object} />;
     default:
       return null;
   }
+}
+
+function ImageView({ object }: { object: ImageObject }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- data URL, no optimization needed
+    <img
+      src={`data:${object.mimeType};base64,${object.dataBase64}`}
+      alt={object.name}
+      draggable={false}
+      className="pointer-events-none h-full w-full select-none"
+      style={{ objectFit: "fill" }}
+    />
+  );
 }
 
 function GroupContent({

@@ -127,6 +127,17 @@ export interface GroupDoc {
   children: SlideChildDoc[];
 }
 
+/** Raster image (`p:pic` + media part). */
+export interface ImageDoc {
+  type: "image";
+  /** Caller-side id (the editor object id); connectors reference it. */
+  refId?: string;
+  name: string;
+  frame: FrameEmu;
+  mimeType: "image/png" | "image/jpeg" | "image/gif";
+  dataBase64: string;
+}
+
 /**
  * Connection shape (`p:cxnSp`). `start` / `end` reference other docs by
  * their `refId`; the generator resolves them to the numeric shape ids it
@@ -151,7 +162,7 @@ export interface ConnectorDoc {
   arrowEnd: boolean;
 }
 
-export type SlideChildDoc = ShapeDoc | ChartDoc | GroupDoc | ConnectorDoc;
+export type SlideChildDoc = ShapeDoc | ChartDoc | GroupDoc | ConnectorDoc | ImageDoc;
 
 export interface SlideDoc {
   /** RRGGBB background fill. */
