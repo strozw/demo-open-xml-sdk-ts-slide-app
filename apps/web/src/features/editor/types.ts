@@ -133,9 +133,15 @@ export type ConnectorKind = "straight" | "bent";
 export type ConnectionSite = "top" | "right" | "bottom" | "left";
 
 export interface ConnectorEndpoint {
-  /** Id of the connected shape / text box (may live inside a group). */
-  objectId: string;
+  /**
+   * Id of the connected shape / text box (may live inside a group).
+   * Omitted for a free-floating endpoint that is not attached to any object.
+   */
+  objectId?: string;
+  /** Connection site (attached endpoints) / routing direction hint (free). */
   site: ConnectionSite;
+  /** Fixed slide position for a free endpoint (ignored when attached). */
+  point?: { x: number; y: number };
 }
 
 /**
@@ -157,6 +163,18 @@ export interface ConnectorObject extends BaseObject {
   lineWidth: number;
   /** Draw an arrowhead at the end point (`a:tailEnd`). */
   arrowEnd: boolean;
+  /**
+   * Bent connectors only: position of the primary mid-line (0..1, default
+   * 0.5). The number of corners is derived from geometry, not this value.
+   * Editor-only refinement — not persisted through OOXML.
+   */
+  bend?: number;
+  /**
+   * Bent connectors only: length (px) the line leads out of the start / end
+   * port before its first / last turn (default 16). Editor-only refinement.
+   */
+  startLead?: number;
+  endLead?: number;
 }
 
 /**

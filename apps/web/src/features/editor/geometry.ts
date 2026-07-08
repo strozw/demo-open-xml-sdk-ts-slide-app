@@ -1,4 +1,9 @@
-import type { ConnectionSite, Rect, SlideObject } from "./types";
+import type { ConnectionSite, ConnectorObject, Rect, SlideObject } from "./types";
+
+export interface Point {
+  x: number;
+  y: number;
+}
 
 export function normalizeRect(a: { x: number; y: number }, b: { x: number; y: number }): Rect {
   return {
@@ -53,6 +58,302 @@ export function facingSites(from: Rect, to: Rect): [ConnectionSite, ConnectionSi
     return dx >= 0 ? ["right", "left"] : ["left", "right"];
   }
   return dy >= 0 ? ["bottom", "top"] : ["top", "bottom"];
+}
+
+/** Cardinal site pointing from `from` toward `to` (for free endpoints). */
+export function siteToward(from: Point, to: Point): ConnectionSite {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? "right" : "left";
+  }
+  return dy >= 0 ? "bottom" : "top";
+}
+
+// ---- Connector routing -----------------------------------------------------
+// Bent connectors leave each port in its site's outward direction (so the
+// line never starts by crossing into the shape) with a fixed clearance, then
+// route orthogonally to the other port. The number of corners adapts to the
+// geometry: a facing pair with room needs 2 corners, a target "behind" the
+// port needs to wrap around and grows to 4.
+
+/** Clearance (px) the line keeps from each connected object before turning. */
+const CONNECTOR_GAP = 16;
+
+const SITE_DIR: Record<ConnectionSite, Point> = {
+  top: { x: 0, y: -1 },
+  right: { x: 1, y: 0 },
+  bottom: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+};
+
+/** Orthogonal path between the two stub ends, honoring the port directions. */
+function connectStubs(a: Point, sd: Point, b: Point, ed: Point, t: number): Point[] {
+  const startHorizontal = sd.x !== 0;
+  const endHorizontal = ed.x !== 0;
+  if (startHorizontal && endHorizontal) {
+    // Both stubs horizontal: a vertical mid-line joins them when the ports
+    // face each other with room; otherwise wrap around vertically.
+    const facing = Math.sign(b.x - a.x) === sd.x && Math.sign(a.x - b.x) === ed.x;
+    if (facing && b.x !== a.x) {
+      const midX = a.x + t * (b.x - a.x);
+      return [
+        { x: midX, y: a.y },
+        { x: midX, y: b.y },
+      ];
+    }
+    const midY = a.y + t * (b.y - a.y);
+    return [
+      { x: a.x, y: midY },
+      { x: b.x, y: midY },
+    ];
+  }
+  if (!startHorizontal && !endHorizontal) {
+    const facing = Math.sign(b.y - a.y) === sd.y && Math.sign(a.y - b.y) === ed.y;
+    if (facing && b.y !== a.y) {
+      const midY = a.y + t * (b.y - a.y);
+      return [
+        { x: a.x, y: midY },
+        { x: b.x, y: midY },
+      ];
+    }
+    const midX = a.x + t * (b.x - a.x);
+    return [
+      { x: midX, y: a.y },
+      { x: midX, y: b.y },
+    ];
+  }
+  // Perpendicular ports: a single corner. Prefer the elbow whose first leg
+  // continues in the start direction (merges into the stub → fewer corners).
+  if (startHorizontal) {
+    return Math.sign(b.x - a.x) === sd.x ? [{ x: b.x, y: a.y }] : [{ x: a.x, y: b.y }];
+  }
+  return Math.sign(b.y - a.y) === sd.y ? [{ x: a.x, y: b.y }] : [{ x: b.x, y: a.y }];
+}
+
+/** Drops duplicate and collinear intermediate points. */
+function simplifyPolyline(points: Point[]): Point[] {
+  const deduped: Point[] = [];
+  for (const point of points) {
+    const last = deduped.at(-1);
+    if (!last || last.x !== point.x || last.y !== point.y) {
+      deduped.push(point);
+    }
+  }
+  const result: Point[] = [];
+  for (let index = 0; index < deduped.length; index += 1) {
+    const previous = result.at(-1);
+    const current = deduped[index]!;
+    const next = deduped[index + 1];
+    if (previous && next) {
+      const collinear =
+        (previous.x === current.x && current.x === next.x) ||
+        (previous.y === current.y && current.y === next.y);
+      if (collinear) {
+        continue;
+      }
+    }
+    result.push(current);
+  }
+  return result;
+}
+
+/** Minimum lead so a stub always leaves the port outward a little. */
+const CONNECTOR_MIN_LEAD = 4;
+
+const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+
+const nearPoint = (p: Point, q: Point): boolean =>
+  Math.abs(p.x - q.x) < 0.5 && Math.abs(p.y - q.y) < 0.5;
+
+const midpoint = (p: Point, q: Point): Point => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+
+/** Shape inputs shared by the routing / handle helpers. */
+interface ConnectorShape {
+  startPoint: Point;
+  endPoint: Point;
+  start: { site: ConnectionSite };
+  end: { site: ConnectionSite };
+  connectorType: ConnectorObject["connectorType"];
+  bend?: number;
+  startLead?: number;
+  endLead?: number;
+}
+
+/** Port directions and stub corners `a` / `b` for a bent connector. */
+function connectorGeometry(
+  connector: ConnectorShape,
+): { sd: Point; ed: Point; a: Point; b: Point } | null {
+  if (connector.connectorType !== "bent") {
+    return null;
+  }
+  const sd = SITE_DIR[connector.start.site];
+  const ed = SITE_DIR[connector.end.site];
+  const sLead = Math.max(0, connector.startLead ?? CONNECTOR_GAP);
+  const eLead = Math.max(0, connector.endLead ?? CONNECTOR_GAP);
+  return {
+    sd,
+    ed,
+    a: { x: connector.startPoint.x + sd.x * sLead, y: connector.startPoint.y + sd.y * sLead },
+    b: { x: connector.endPoint.x + ed.x * eLead, y: connector.endPoint.y + ed.y * eLead },
+  };
+}
+
+/**
+ * Absolute polyline of a connector. Straight connectors are a single
+ * segment; bent connectors are the orthogonal route with clearance stubs.
+ * `bend` shifts the mid-line; `startLead`/`endLead` set the stub lengths.
+ */
+export function connectorRoutePoints(connector: ConnectorShape): Point[] {
+  const { startPoint, endPoint } = connector;
+  const geo = connectorGeometry(connector);
+  if (!geo) {
+    return [startPoint, endPoint];
+  }
+  const t = clamp01(connector.bend ?? 0.5);
+  return simplifyPolyline([
+    startPoint,
+    geo.a,
+    ...connectStubs(geo.a, geo.sd, geo.b, geo.ed, t),
+    geo.b,
+    endPoint,
+  ]);
+}
+
+/** The bend-controlled mid-line for the given stub corners, or null. */
+function bendLine(
+  a: Point,
+  sd: Point,
+  b: Point,
+  ed: Point,
+  t: number,
+): { point: Point; axis: "x" | "y"; toBend: (coordinate: number) => number } | null {
+  const startHorizontal = sd.x !== 0;
+  const endHorizontal = ed.x !== 0;
+  if (startHorizontal !== endHorizontal) {
+    return null; // perpendicular ports: single elbow, no bend line
+  }
+  if (startHorizontal) {
+    const facing = Math.sign(b.x - a.x) === sd.x && Math.sign(a.x - b.x) === ed.x;
+    if (facing && b.x !== a.x) {
+      const midX = a.x + t * (b.x - a.x);
+      return {
+        point: { x: midX, y: (a.y + b.y) / 2 },
+        axis: "x",
+        toBend: (x) => (x - a.x) / (b.x - a.x),
+      };
+    }
+    if (b.y === a.y) {
+      return null;
+    }
+    const midY = a.y + t * (b.y - a.y);
+    return {
+      point: { x: (a.x + b.x) / 2, y: midY },
+      axis: "y",
+      toBend: (y) => (y - a.y) / (b.y - a.y),
+    };
+  }
+  const facing = Math.sign(b.y - a.y) === sd.y && Math.sign(a.y - b.y) === ed.y;
+  if (facing && b.y !== a.y) {
+    const midY = a.y + t * (b.y - a.y);
+    return {
+      point: { x: (a.x + b.x) / 2, y: midY },
+      axis: "y",
+      toBend: (y) => (y - a.y) / (b.y - a.y),
+    };
+  }
+  if (b.x === a.x) {
+    return null;
+  }
+  const midX = a.x + t * (b.x - a.x);
+  return {
+    point: { x: midX, y: (a.y + b.y) / 2 },
+    axis: "x",
+    toBend: (x) => (x - a.x) / (b.x - a.x),
+  };
+}
+
+/** Which segment a connector handle adjusts. */
+export type ConnectorHandleKind = "bend" | "start-lead" | "end-lead";
+
+export interface ConnectorHandle {
+  kind: ConnectorHandleKind;
+  /** Handle position on the segment it controls. */
+  point: Point;
+  /** Axis the handle drags along. */
+  axis: "x" | "y";
+  /** Maps a dragged coordinate on `axis` to the connector patch. */
+  patchFor: (coordinate: number) => Partial<ConnectorObject>;
+}
+
+/**
+ * Draggable handles for a bent connector: the primary mid-line (`bend`) plus
+ * the start-side and end-side stub segments (`startLead` / `endLead`) when
+ * those form a real corner in the route (i.e. the wrap-around cases where
+ * they are visible perpendicular segments).
+ */
+export function connectorHandles(connector: ConnectorShape): ConnectorHandle[] {
+  const geo = connectorGeometry(connector);
+  if (!geo) {
+    return [];
+  }
+  const { sd, ed, a, b } = geo;
+  const handles: ConnectorHandle[] = [];
+
+  const bend = bendLine(a, sd, b, ed, clamp01(connector.bend ?? 0.5));
+  if (bend) {
+    handles.push({
+      kind: "bend",
+      point: bend.point,
+      axis: bend.axis,
+      patchFor: (coordinate) => ({ bend: clamp01(bend.toBend(coordinate)) }),
+    });
+  }
+
+  const points = connectorRoutePoints(connector);
+
+  // The stub corner is a draggable segment only when it survives as a real
+  // vertex (the facing cases merge it into the endpoint's leg). The handle
+  // sits at the midpoint of that perpendicular segment so it is easy to grab.
+  if (points.length >= 3 && nearPoint(points[1]!, a) && !nearPoint(a, connector.startPoint)) {
+    const axis = sd.x !== 0 ? "x" : "y";
+    handles.push({
+      kind: "start-lead",
+      point: midpoint(a, points[2]!),
+      axis,
+      patchFor: (coordinate) => ({
+        startLead: Math.max(
+          CONNECTOR_MIN_LEAD,
+          axis === "x"
+            ? (coordinate - connector.startPoint.x) * sd.x
+            : (coordinate - connector.startPoint.y) * sd.y,
+        ),
+      }),
+    });
+  }
+  const secondLast = points[points.length - 2];
+  if (
+    points.length >= 3 &&
+    secondLast &&
+    nearPoint(secondLast, b) &&
+    !nearPoint(b, connector.endPoint)
+  ) {
+    const axis = ed.x !== 0 ? "x" : "y";
+    handles.push({
+      kind: "end-lead",
+      point: midpoint(b, points[points.length - 3]!),
+      axis,
+      patchFor: (coordinate) => ({
+        endLead: Math.max(
+          CONNECTOR_MIN_LEAD,
+          axis === "x"
+            ? (coordinate - connector.endPoint.x) * ed.x
+            : (coordinate - connector.endPoint.y) * ed.y,
+        ),
+      }),
+    });
+  }
+  return handles;
 }
 
 export function pointInRect(point: { x: number; y: number }, rect: Rect): boolean {

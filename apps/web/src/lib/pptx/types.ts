@@ -150,7 +150,12 @@ export interface ConnectorDoc {
   name: string;
   /** Bounding box of the two endpoints. */
   frame: FrameEmu;
-  preset: "straightConnector1" | "bentConnector3";
+  preset:
+    | "straightConnector1"
+    | "bentConnector2"
+    | "bentConnector3"
+    | "bentConnector4"
+    | "bentConnector5";
   flipH: boolean;
   flipV: boolean;
   start?: { refId: string; siteIndex: number };

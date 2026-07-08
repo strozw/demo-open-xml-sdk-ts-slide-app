@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 
 import { ChartPreview } from "./chart-preview";
 import { fontDefinition, segmentByStyle } from "./fonts";
+import { connectorRoutePoints } from "./geometry";
 import { shapeDefinition } from "./shape-defs";
 import type {
   ConnectorObject,
@@ -105,22 +106,17 @@ function ShapeSvg({ object }: { object: ShapeObject }) {
 }
 
 /**
- * Connector rendering: a straight line or an H-V-H elbow (matching
- * bentConnector3 with its default 50% bend) between the derived endpoints,
+ * Connector rendering: a straight segment, or an orthogonal route whose
+ * corner count adapts to the endpoint geometry (see `connectorRoutePoints`),
  * drawn in the connector's own frame (local coordinates).
  */
 function ConnectorView({ object }: { object: ConnectorObject }) {
   const width = Math.max(1, object.width);
   const height = Math.max(1, object.height);
-  const sx = object.startPoint.x - object.x;
-  const sy = object.startPoint.y - object.y;
-  const ex = object.endPoint.x - object.x;
-  const ey = object.endPoint.y - object.y;
-  const midX = (sx + ex) / 2;
-  const path =
-    object.connectorType === "bent"
-      ? `M ${sx} ${sy} L ${midX} ${sy} L ${midX} ${ey} L ${ex} ${ey}`
-      : `M ${sx} ${sy} L ${ex} ${ey}`;
+  const points = connectorRoutePoints(object);
+  const path = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x - object.x} ${point.y - object.y}`)
+    .join(" ");
   const markerId = `connector-arrow-${object.id}`;
 
   return (

@@ -9,6 +9,7 @@
 import { A, DC, P, PmlPackage, R, XElement, type OpenXmlPart } from "openxmlsdkts";
 
 import { fontKeyFromTypeface, type ResolvedCharStyle } from "@/features/editor/fonts";
+import { siteToward } from "@/features/editor/geometry";
 import { SHAPE_DEFINITIONS } from "@/features/editor/shape-defs";
 import {
   createId,
@@ -352,17 +353,6 @@ function parseConnector(cxnSp: XElement, registry: ShapeIdRegistry): ConnectorOb
   const name = nv?.element(P.cNvPr)?.attribute("name")?.value ?? "コネクタ";
   const context = `コネクタ「${name}」`;
 
-  const readEndpoint = (elementName: typeof A.stCxn): ConnectorObject["start"] => {
-    const reference = nv?.element(P.cNvCxnSpPr)?.element(elementName);
-    const numericId = reference?.attribute("id")?.value;
-    const site = INDEX_TO_SITE[Number(reference?.attribute("idx")?.value ?? -1)];
-    const objectId = numericId ? registry.get(numericId) : undefined;
-    if (!objectId || !site) {
-      throw new PptxImportError(`${UNSUPPORTED_FILE} (${context} の接続先を解決できません)`);
-    }
-    return { objectId, site };
-  };
-
   const spPr = cxnSp.element(P.spPr);
   const xfrmElement = spPr?.element(A.xfrm);
   const frame = parseXfrm(xfrmElement, context);
@@ -371,10 +361,44 @@ function parseConnector(cxnSp: XElement, registry: ShapeIdRegistry): ConnectorOb
 
   const prst = spPr?.element(A.prstGeom)?.attribute("prst")?.value;
   const connectorType =
-    prst === "bentConnector3" ? "bent" : prst === "straightConnector1" ? "straight" : undefined;
+    prst === "straightConnector1"
+      ? "straight"
+      : prst?.startsWith("bentConnector")
+        ? "bent"
+        : undefined;
   if (!connectorType) {
     throw new PptxImportError(`${UNSUPPORTED_FILE} (未対応のコネクタ: ${prst ?? "不明"})`);
   }
+
+  const startPoint = {
+    x: flipH ? frame.x + frame.width : frame.x,
+    y: flipV ? frame.y + frame.height : frame.y,
+  };
+  const endPoint = {
+    x: flipH ? frame.x : frame.x + frame.width,
+    y: flipV ? frame.y : frame.y + frame.height,
+  };
+
+  // Attached endpoint from a:stCxn/a:endCxn; otherwise a free endpoint whose
+  // fixed point comes from the geometry, with a routing site toward the
+  // other end.
+  const readEndpoint = (
+    elementName: typeof A.stCxn,
+    ownPoint: { x: number; y: number },
+    otherPoint: { x: number; y: number },
+  ): ConnectorObject["start"] => {
+    const reference = nv?.element(P.cNvCxnSpPr)?.element(elementName);
+    const numericId = reference?.attribute("id")?.value;
+    const objectId = numericId ? registry.get(numericId) : undefined;
+    if (objectId) {
+      const site = INDEX_TO_SITE[Number(reference?.attribute("idx")?.value ?? -1)];
+      if (!site) {
+        throw new PptxImportError(`${UNSUPPORTED_FILE} (${context} の接続サイトが不正です)`);
+      }
+      return { objectId, site };
+    }
+    return { site: siteToward(ownPoint, otherPoint), point: ownPoint };
+  };
 
   const line = spPr?.element(A.ln);
   const tailType = line?.element(A.tailEnd)?.attribute("type")?.value;
@@ -384,16 +408,10 @@ function parseConnector(cxnSp: XElement, registry: ShapeIdRegistry): ConnectorOb
     name,
     type: "connector",
     connectorType,
-    start: readEndpoint(A.stCxn),
-    end: readEndpoint(A.endCxn),
-    startPoint: {
-      x: flipH ? frame.x + frame.width : frame.x,
-      y: flipV ? frame.y + frame.height : frame.y,
-    },
-    endPoint: {
-      x: flipH ? frame.x : frame.x + frame.width,
-      y: flipV ? frame.y : frame.y + frame.height,
-    },
+    start: readEndpoint(A.stCxn, startPoint, endPoint),
+    end: readEndpoint(A.endCxn, endPoint, startPoint),
+    startPoint,
+    endPoint,
     ...frame,
     lineColor: (line ? solidFillColor(line) : undefined) ?? "#1f2937",
     lineWidth: line ? Math.max(1, emuToPx(line.attribute("w")?.value)) : 1,

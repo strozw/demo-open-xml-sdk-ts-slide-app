@@ -15,6 +15,7 @@ import { inflateRawSync } from "node:zlib";
 import { P, PmlPackage } from "openxmlsdkts";
 
 import { resolveCharStyle } from "../src/features/editor/fonts";
+import { connectorRoutePoints } from "../src/features/editor/geometry";
 import { deckToPresentationDoc } from "../src/lib/export-pptx";
 import { deckFromPptxBlob } from "../src/lib/import-pptx";
 import { generatePresentation } from "../src/lib/pptx";
@@ -594,12 +595,93 @@ assert.ok(slide1.includes("<a:stCxn id='2' idx='3' />"), "stCxn references o1 ri
 assert.ok(slide1.includes("<a:endCxn id='3' idx='1' />"), "endCxn references o2 left site");
 assert.ok(slide1.includes("prst='bentConnector3'"), "bent connector preset");
 assert.ok(slide1.includes("<a:tailEnd type='triangle' />"), "arrowhead at the end");
+
+// Orthogonal routing adapts its corner count to the geometry: a facing pair
+// with room needs 2 corners; a target behind the ports wraps around to 4.
+const facingRoute = connectorRoutePoints({
+  startPoint: { x: 100, y: 100 },
+  endPoint: { x: 300, y: 200 },
+  start: { site: "right" },
+  end: { site: "left" },
+  connectorType: "bent",
+});
+assert.equal(facingRoute.length - 2, 2, "facing bent route has 2 corners");
+const behindRoute = connectorRoutePoints({
+  startPoint: { x: 300, y: 100 },
+  endPoint: { x: 100, y: 200 },
+  start: { site: "right" },
+  end: { site: "left" },
+  connectorType: "bent",
+});
+assert.equal(behindRoute.length - 2, 4, "behind bent route wraps around to 4 corners");
+// The bend fraction shifts the primary mid-line without changing corners.
+const bentDefault = connectorRoutePoints({
+  startPoint: { x: 100, y: 100 },
+  endPoint: { x: 300, y: 200 },
+  start: { site: "right" },
+  end: { site: "left" },
+  connectorType: "bent",
+});
+const bentShifted = connectorRoutePoints({
+  startPoint: { x: 100, y: 100 },
+  endPoint: { x: 300, y: 200 },
+  start: { site: "right" },
+  end: { site: "left" },
+  connectorType: "bent",
+  bend: 0.2,
+});
+assert.notEqual(bentDefault[1]!.x, bentShifted[1]!.x, "bend shifts the mid-line");
 assert.ok(
   slide1.includes(
     `<a:off x='${300 * EMU_PER_PX}' y='${100 * EMU_PER_PX}' /><a:ext cx='${100 * EMU_PER_PX}' cy='${340 * EMU_PER_PX}' />`,
   ),
   "connector frame is the endpoint bounding box",
 );
+
+// A free-floating connector (both endpoints unattached) exports as a
+// p:cxnSp with no a:stCxn / a:endCxn — just geometry.
+{
+  const freeBlob = await generatePresentation(
+    await deckToPresentationDoc(
+      {
+        title: "free line",
+        slides: [
+          {
+            id: "fs1",
+            background: "#ffffff",
+            objects: [
+              {
+                id: "fl1",
+                name: "FreeLine",
+                type: "connector",
+                connectorType: "straight",
+                start: { site: "right", point: { x: 100, y: 100 } },
+                end: { site: "left", point: { x: 400, y: 300 } },
+                startPoint: { x: 100, y: 100 },
+                endPoint: { x: 400, y: 300 },
+                x: 100,
+                y: 100,
+                width: 300,
+                height: 200,
+                lineColor: "#1f2937",
+                lineWidth: 2,
+                arrowEnd: true,
+              },
+            ],
+          },
+        ],
+      },
+      { rasterize: stubRasterizer },
+    ),
+  );
+  const freeSlide = readZipEntries(Buffer.from(await freeBlob.arrayBuffer()))
+    .get("ppt/slides/slide1.xml")!
+    .toString("utf8");
+  assert.ok(freeSlide.includes("<p:cxnSp>"), "free connector element");
+  assert.ok(!freeSlide.includes("<a:stCxn"), "free connector has no start connection");
+  assert.ok(!freeSlide.includes("<a:endCxn"), "free connector has no end connection");
+  assert.ok(freeSlide.includes("prst='straightConnector1'"), "free straight connector preset");
+}
 
 // ---- Embedded fonts ------------------------------------------------------
 const presentationXml = entries.get("ppt/presentation.xml")!.toString("utf8");

@@ -1,5 +1,5 @@
 import { fontDefinition, segmentByStyle } from "@/features/editor/fonts";
-import { boundingBox, objectBounds } from "@/features/editor/geometry";
+import { boundingBox, connectorRoutePoints, objectBounds } from "@/features/editor/geometry";
 import { shapeDefinition } from "@/features/editor/shape-defs";
 import type {
   ChartObject,
@@ -193,17 +193,47 @@ async function leafChild(
 /** Cardinal sites → connection-site index (rect-family cxn order). */
 const SITE_INDEX: Record<ConnectionSite, number> = { top: 0, left: 1, bottom: 2, right: 3 };
 
+/** Corner count → the matching PowerPoint bent-connector preset. */
+const BENT_PRESET_BY_CORNERS: Record<number, ConnectorDoc["preset"]> = {
+  1: "bentConnector2",
+  2: "bentConnector3",
+  3: "bentConnector4",
+  4: "bentConnector5",
+};
+
 function connectorChild(object: ConnectorObject): ConnectorDoc {
+  // Pick the bent preset by the editor's corner count so PowerPoint draws a
+  // route with the same number of bends. The frame is the endpoint bounding
+  // box (not the routed-polyline box) because PowerPoint maps the preset
+  // geometry into that box and re-routes from the connection points.
+  const corners = connectorRoutePoints(object).length - 2;
+  const preset: ConnectorDoc["preset"] =
+    object.connectorType === "straight" || corners <= 0
+      ? "straightConnector1"
+      : (BENT_PRESET_BY_CORNERS[Math.min(4, corners)] ?? "bentConnector3");
+  const minX = Math.min(object.startPoint.x, object.endPoint.x);
+  const minY = Math.min(object.startPoint.y, object.endPoint.y);
   return {
     type: "connector",
     refId: object.id,
     name: object.name,
-    frame: frame(object),
-    preset: object.connectorType === "bent" ? "bentConnector3" : "straightConnector1",
+    frame: {
+      x: pxToEmu(minX),
+      y: pxToEmu(minY),
+      cx: pxToEmu(Math.abs(object.endPoint.x - object.startPoint.x)),
+      cy: pxToEmu(Math.abs(object.endPoint.y - object.startPoint.y)),
+    },
+    preset,
     flipH: object.endPoint.x < object.startPoint.x,
     flipV: object.endPoint.y < object.startPoint.y,
-    start: { refId: object.start.objectId, siteIndex: SITE_INDEX[object.start.site] },
-    end: { refId: object.end.objectId, siteIndex: SITE_INDEX[object.end.site] },
+    // Only attached endpoints get a semantic connection; free endpoints
+    // rely on the geometry (frame + flips) alone.
+    start: object.start.objectId
+      ? { refId: object.start.objectId, siteIndex: SITE_INDEX[object.start.site] }
+      : undefined,
+    end: object.end.objectId
+      ? { refId: object.end.objectId, siteIndex: SITE_INDEX[object.end.site] }
+      : undefined,
     lineColor: hex(object.lineColor),
     lineWidthEmu: pxToEmu(object.lineWidth),
     arrowEnd: object.arrowEnd,

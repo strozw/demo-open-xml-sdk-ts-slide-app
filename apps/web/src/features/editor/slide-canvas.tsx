@@ -10,6 +10,10 @@ import {
   pointInRect,
   rectsIntersect,
   sitePoint,
+  siteToward,
+  connectorHandles,
+  connectorRoutePoints,
+  type ConnectorHandleKind,
 } from "./geometry";
 import {
   ContextMenu,
@@ -28,9 +32,11 @@ import {
   useSelectedObjects,
 } from "./store";
 import {
+  createId,
   SLIDE_HEIGHT,
   SLIDE_WIDTH,
   type ConnectionSite,
+  type ConnectorEndpoint,
   type ConnectorObject,
   type Rect,
   type ShapeObject,
@@ -53,6 +59,29 @@ interface ConnectorDrag {
   endpoint: "start" | "end";
   point: Point;
   candidate: ConnectorDropCandidate | null;
+}
+
+/** Connection sites of a hover candidate; the nearest one is emphasized. */
+function CandidateSites({ candidate }: { candidate: ConnectorDropCandidate }) {
+  return (
+    <>
+      {CONNECTION_SITES.map((site) => {
+        const point = sitePoint(candidate.bounds, site);
+        const active = site === candidate.site;
+        return (
+          <circle
+            key={site}
+            cx={point.x}
+            cy={point.y}
+            r={active ? 6 : 4}
+            fill={active ? "#2563eb" : "#ffffff"}
+            stroke="#2563eb"
+            strokeWidth={1.5}
+          />
+        );
+      })}
+    </>
+  );
 }
 
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -96,7 +125,9 @@ type PointerSession =
   | { mode: "marquee"; start: Point }
   | { mode: "move"; last: Point }
   | { mode: "resize"; objectId: string; handle: ResizeHandle; startFrame: Rect; start: Point }
-  | { mode: "connector-endpoint" };
+  | { mode: "connector-endpoint" }
+  | { mode: "connector-handle"; connectorId: string; handleKind: ConnectorHandleKind }
+  | { mode: "draw-line"; start: Point };
 
 function resizeFrame(startFrame: Rect, handle: ResizeHandle, dx: number, dy: number): Rect {
   let { x, y, width, height } = startFrame;
@@ -130,6 +161,7 @@ export function SlideCanvas() {
   const [scale, setScale] = React.useState(0.6);
   const [marquee, setMarquee] = React.useState<{ start: Point; current: Point } | null>(null);
   const [connectorDrag, setConnectorDrag] = React.useState<ConnectorDrag | null>(null);
+  const [drawing, setDrawing] = React.useState<{ start: Point; current: Point } | null>(null);
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -173,11 +205,23 @@ export function SlideCanvas() {
   }
   const selectedSet = new Set(state.selectedIds);
 
+  /** Starts drawing a line with the armed tool from the given slide point. */
+  const beginDrawLine = (event: React.PointerEvent<HTMLDivElement>) => {
+    canvasRef.current?.setPointerCapture(event.pointerId);
+    const point = toSlidePoint(event);
+    sessionRef.current = { mode: "draw-line", start: point };
+    setDrawing({ start: point, current: point });
+  };
+
   const handleCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.target !== event.currentTarget) {
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (state.pendingLine) {
+      beginDrawLine(event);
+      return;
+    }
     const point = toSlidePoint(event);
     sessionRef.current = { mode: "marquee", start: point };
     setMarquee({ start: point, current: point });
@@ -191,6 +235,11 @@ export function SlideCanvas() {
       return;
     }
     event.stopPropagation();
+    // A line can start on top of an object (it attaches to it on release).
+    if (state.pendingLine) {
+      beginDrawLine(event);
+      return;
+    }
     canvasRef.current?.setPointerCapture(event.pointerId);
     if (event.shiftKey) {
       dispatch({ type: "toggle-selected", id: object.id });
@@ -291,6 +340,19 @@ export function SlideCanvas() {
     });
   };
 
+  const handleConnectorHandleDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+    connector: ConnectorObject,
+    handleKind: ConnectorHandleKind,
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.stopPropagation();
+    canvasRef.current?.setPointerCapture(event.pointerId);
+    sessionRef.current = { mode: "connector-handle", connectorId: connector.id, handleKind };
+  };
+
   const handleResizePointerDown = (
     event: React.PointerEvent<HTMLDivElement>,
     objectId: string,
@@ -338,28 +400,80 @@ export function SlideCanvas() {
       setConnectorDrag((previous) =>
         previous ? { ...previous, point, candidate: findDropCandidate(point) } : previous,
       );
+    } else if (session.mode === "connector-handle") {
+      const connector = slide.objects.find((candidate) => candidate.id === session.connectorId);
+      if (connector?.type === "connector") {
+        const handle = connectorHandles(connector).find((item) => item.kind === session.handleKind);
+        if (handle) {
+          const patch = handle.patchFor(handle.axis === "x" ? point.x : point.y);
+          dispatch({ type: "update-object", id: connector.id, patch });
+        }
+      }
+    } else if (session.mode === "draw-line") {
+      setDrawing((previous) => (previous ? { ...previous, current: point } : previous));
     }
   };
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
     const session = sessionRef.current;
+    if (session.mode === "draw-line") {
+      const end = toSlidePoint(event);
+      const start = session.start;
+      const dragged = Math.hypot(end.x - start.x, end.y - start.y) >= 8;
+      if (dragged && state.pendingLine) {
+        // Attach each end to the object / site under it, or leave it free.
+        const startCandidate = findDropCandidate(start);
+        const endCandidate = findDropCandidate(end);
+        const startResolved = startCandidate?.point ?? start;
+        const endResolved = endCandidate?.point ?? end;
+        const startEndpoint: ConnectorEndpoint = startCandidate
+          ? { objectId: startCandidate.objectId, site: startCandidate.site }
+          : { site: siteToward(startResolved, endResolved), point: startResolved };
+        const endEndpoint: ConnectorEndpoint = endCandidate
+          ? { objectId: endCandidate.objectId, site: endCandidate.site }
+          : { site: siteToward(endResolved, startResolved), point: endResolved };
+        dispatch({
+          type: "add-line",
+          connector: {
+            id: createId("object"),
+            name: "コネクタ",
+            type: "connector",
+            connectorType: state.pendingLine,
+            start: startEndpoint,
+            end: endEndpoint,
+            startPoint: startResolved,
+            endPoint: endResolved,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            lineColor: "#1f2937",
+            lineWidth: 2,
+            arrowEnd: true,
+          },
+        });
+      } else {
+        // A click without a drag just disarms the tool.
+        dispatch({ type: "cancel-line-tool" });
+      }
+      setDrawing(null);
+      sessionRef.current = { mode: "idle" };
+      return;
+    }
     if (session.mode === "connector-endpoint") {
-      if (connectorDrag?.candidate) {
-        const connector = slide.objects.find(
-          (candidate) => candidate.id === connectorDrag.connectorId,
-        );
-        if (connector?.type === "connector") {
-          dispatch({
-            type: "update-object",
-            id: connector.id,
-            patch: {
-              [connectorDrag.endpoint]: {
-                objectId: connectorDrag.candidate.objectId,
-                site: connectorDrag.candidate.site,
-              },
-            },
-          });
-        }
+      const connector = slide.objects.find(
+        (candidate) => candidate.id === connectorDrag?.connectorId,
+      );
+      if (connectorDrag && connector?.type === "connector") {
+        const endpoint = connectorDrag.endpoint;
+        const other = endpoint === "start" ? connector.endPoint : connector.startPoint;
+        const dropped = connectorDrag.point;
+        // Over a connectable object → attach to its nearest site; dropped in
+        // empty space → detach into a free endpoint at the cursor.
+        const patch: ConnectorEndpoint = connectorDrag.candidate
+          ? { objectId: connectorDrag.candidate.objectId, site: connectorDrag.candidate.site }
+          : { site: siteToward(dropped, other), point: dropped };
+        dispatch({ type: "update-object", id: connector.id, patch: { [endpoint]: patch } });
       }
       setConnectorDrag(null);
       sessionRef.current = { mode: "idle" };
@@ -396,6 +510,7 @@ export function SlideCanvas() {
         event.preventDefault();
         dispatch({ type: "delete-selected" });
       } else if (event.key === "Escape") {
+        dispatch({ type: "cancel-line-tool" });
         dispatch({ type: "set-selection", ids: [] });
       } else if (event.key.startsWith("Arrow")) {
         event.preventDefault();
@@ -483,6 +598,7 @@ export function SlideCanvas() {
             transformOrigin: "top left",
             backgroundColor: slide.background,
             touchAction: "none",
+            cursor: state.pendingLine ? "crosshair" : undefined,
           }}
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handlePointerMove}
@@ -504,7 +620,10 @@ export function SlideCanvas() {
                       width: object.width,
                       height: object.height,
                       cursor: "move",
-                      outline: selected ? "2px solid #2563eb" : undefined,
+                      // Connectors get a line-shaped highlight instead of a
+                      // bounding rectangle (drawn as an overlay below).
+                      outline:
+                        selected && object.type !== "connector" ? "2px solid #2563eb" : undefined,
                       outlineOffset: 1,
                     }}
                     onPointerDown={(event) => handleObjectPointerDown(event, object)}
@@ -677,6 +796,27 @@ export function SlideCanvas() {
               })
             : null}
 
+          {singleSelected?.type === "connector"
+            ? connectorHandles(singleSelected).map((handle) => (
+                <div
+                  key={handle.kind}
+                  data-testid={`connector-handle-${handle.kind}`}
+                  title="ドラッグで折れ線の位置を調整"
+                  className="absolute z-10 rounded-sm border-2 border-blue-600 bg-white"
+                  style={{
+                    left: handle.point.x - 5,
+                    top: handle.point.y - 5,
+                    width: 10,
+                    height: 10,
+                    cursor: handle.axis === "x" ? "ew-resize" : "ns-resize",
+                  }}
+                  onPointerDown={(event) =>
+                    handleConnectorHandleDown(event, singleSelected, handle.kind)
+                  }
+                />
+              ))
+            : null}
+
           {connectorDrag && draggedConnector ? (
             <svg
               className="pointer-events-none absolute left-0 top-0 z-20"
@@ -703,26 +843,39 @@ export function SlideCanvas() {
                 strokeWidth={1.5}
                 strokeDasharray="6 4"
               />
-              {connectorDrag.candidate
-                ? CONNECTION_SITES.map((site) => {
-                    const candidate = connectorDrag.candidate!;
-                    const point = sitePoint(candidate.bounds, site);
-                    const active = site === candidate.site;
-                    return (
-                      <circle
-                        key={site}
-                        cx={point.x}
-                        cy={point.y}
-                        r={active ? 6 : 4}
-                        fill={active ? "#2563eb" : "#ffffff"}
-                        stroke="#2563eb"
-                        strokeWidth={1.5}
-                      />
-                    );
-                  })
-                : null}
+              {connectorDrag.candidate ? (
+                <CandidateSites candidate={connectorDrag.candidate} />
+              ) : null}
             </svg>
           ) : null}
+
+          {/* Line-shaped selection highlight for connectors (a translucent
+              halo tracing the route) instead of a bounding rectangle. */}
+          {slide.objects.map((object) =>
+            object.type === "connector" && selectedSet.has(object.id) ? (
+              <svg
+                key={`connector-highlight-${object.id}`}
+                className="pointer-events-none absolute left-0 top-0"
+                width={SLIDE_WIDTH}
+                height={SLIDE_HEIGHT}
+                viewBox={`0 0 ${SLIDE_WIDTH} ${SLIDE_HEIGHT}`}
+                style={{ overflow: "visible" }}
+                data-testid={`connector-highlight-${object.id}`}
+              >
+                <polyline
+                  points={connectorRoutePoints(object)
+                    .map((point) => `${point.x},${point.y}`)
+                    .join(" ")}
+                  fill="none"
+                  stroke="#2563eb"
+                  strokeOpacity={0.35}
+                  strokeWidth={object.lineWidth + 6}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              </svg>
+            ) : null,
+          )}
 
           {marqueeRect ? (
             <div
@@ -735,6 +888,32 @@ export function SlideCanvas() {
                 height: marqueeRect.height,
               }}
             />
+          ) : null}
+
+          {drawing ? (
+            <svg
+              className="pointer-events-none absolute left-0 top-0 z-20"
+              width={SLIDE_WIDTH}
+              height={SLIDE_HEIGHT}
+              viewBox={`0 0 ${SLIDE_WIDTH} ${SLIDE_HEIGHT}`}
+              style={{ overflow: "visible" }}
+              data-testid="line-draw-preview"
+            >
+              <line
+                x1={drawing.start.x}
+                y1={drawing.start.y}
+                x2={drawing.current.x}
+                y2={drawing.current.y}
+                stroke="#2563eb"
+                strokeWidth={1.5}
+                strokeDasharray="6 4"
+              />
+              {/* Show the connectable sites of the objects under each end. */}
+              {[findDropCandidate(drawing.start), findDropCandidate(drawing.current)].map(
+                (candidate, index) =>
+                  candidate ? <CandidateSites key={index} candidate={candidate} /> : null,
+              )}
+            </svg>
           ) : null}
         </div>
       </div>

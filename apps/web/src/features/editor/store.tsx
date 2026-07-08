@@ -4,6 +4,7 @@ import * as React from "react";
 
 import {
   boundingBox,
+  connectorRoutePoints,
   facingSites,
   fitObjectToFrame,
   objectBounds,
@@ -14,6 +15,7 @@ import {
   createDeck,
   createId,
   createSlide,
+  type ConnectorKind,
   type ConnectorObject,
   type Deck,
   type GroupObject,
@@ -35,6 +37,12 @@ export interface EditorState {
   textEditing: { objectId: string; selectionStart: number; selectionEnd: number } | null;
   /** Slideshow playback: replaces the canvas with the read-only view. */
   presenting: boolean;
+  /**
+   * Armed line tool: the next drag on the canvas draws a connector of this
+   * kind (attaching to objects under the endpoints, or free-floating). Null
+   * when no line tool is active.
+   */
+  pendingLine: ConnectorKind | null;
 }
 
 export type EditorAction =
@@ -65,7 +73,10 @@ export type EditorAction =
   | { type: "connect-selected" }
   | { type: "start-presentation" }
   | { type: "stop-presentation" }
-  | { type: "step-slide"; delta: 1 | -1 };
+  | { type: "step-slide"; delta: 1 | -1 }
+  | { type: "start-line-tool"; connectorType: ConnectorKind }
+  | { type: "cancel-line-tool" }
+  | { type: "add-line"; connector: ConnectorObject };
 
 function currentSlide(state: EditorState): Slide {
   const slide = state.deck.slides.find((s) => s.id === state.currentSlideId);
@@ -88,30 +99,48 @@ function withDerivedFrames(object: SlideObject): SlideObject {
 
 /**
  * Connector geometry follows its endpoints: recompute the site points from
- * the connected objects' current bounds and the frame from those points.
+ * the connected objects' current bounds, then set the frame to the bounding
+ * box of the whole routed polyline (so the route — which extends past the
+ * endpoints by the clearance gap — stays inside the selectable frame).
  * Connectors whose endpoints no longer exist are dropped.
  */
 function syncConnectors(objects: SlideObject[]): SlideObject[] {
+  // Attached endpoints track the connected object's current site; free
+  // endpoints keep their stored point. An attached endpoint whose object is
+  // gone resolves to null and the connector is dropped.
+  const resolveEndpoint = (endpoint: ConnectorObject["start"]): { x: number; y: number } | null => {
+    if (endpoint.objectId === undefined) {
+      return endpoint.point ?? null;
+    }
+    const target = findObjectDeep(objects, endpoint.objectId);
+    if (!target || target.type === "connector") {
+      return null;
+    }
+    return sitePoint(objectBounds(target), endpoint.site);
+  };
   return objects.flatMap((object): SlideObject[] => {
     if (object.type !== "connector") {
       return [object];
     }
-    const start = findObjectDeep(objects, object.start.objectId);
-    const end = findObjectDeep(objects, object.end.objectId);
-    if (!start || !end || start.type === "connector" || end.type === "connector") {
+    const startPoint = resolveEndpoint(object.start);
+    const endPoint = resolveEndpoint(object.end);
+    if (!startPoint || !endPoint) {
       return [];
     }
-    const startPoint = sitePoint(objectBounds(start), object.start.site);
-    const endPoint = sitePoint(objectBounds(end), object.end.site);
+    const points = connectorRoutePoints({ ...object, startPoint, endPoint });
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
     return [
       {
         ...object,
         startPoint,
         endPoint,
-        x: Math.min(startPoint.x, endPoint.x),
-        y: Math.min(startPoint.y, endPoint.y),
-        width: Math.abs(endPoint.x - startPoint.x),
-        height: Math.abs(endPoint.y - startPoint.y),
+        x: minX,
+        y: minY,
+        width: Math.max(...xs) - minX,
+        height: Math.max(...ys) - minY,
       },
     ];
   });
@@ -451,11 +480,15 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
                 ...object,
                 start: {
                   ...object.start,
-                  objectId: idMap.get(object.start.objectId) ?? object.start.objectId,
+                  objectId: object.start.objectId
+                    ? (idMap.get(object.start.objectId) ?? object.start.objectId)
+                    : undefined,
                 },
                 end: {
                   ...object.end,
-                  objectId: idMap.get(object.end.objectId) ?? object.end.objectId,
+                  objectId: object.end.objectId
+                    ? (idMap.get(object.end.objectId) ?? object.end.objectId)
+                    : undefined,
                 },
               }
             : object,
@@ -585,11 +618,15 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
               ...object,
               start: {
                 ...object.start,
-                objectId: idMap.get(object.start.objectId) ?? object.start.objectId,
+                objectId: object.start.objectId
+                  ? (idMap.get(object.start.objectId) ?? object.start.objectId)
+                  : undefined,
               },
               end: {
                 ...object.end,
-                objectId: idMap.get(object.end.objectId) ?? object.end.objectId,
+                objectId: object.end.objectId
+                  ? (idMap.get(object.end.objectId) ?? object.end.objectId)
+                  : undefined,
               },
             }
           : object,
@@ -640,6 +677,7 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
         selectedIds: [],
         textEditing: null,
         presenting: false,
+        pendingLine: null,
       };
 
     case "start-text-edit":
@@ -664,8 +702,26 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
           }
         : state;
 
+    case "start-line-tool":
+      return { ...state, pendingLine: action.connectorType, selectedIds: [], textEditing: null };
+
+    case "cancel-line-tool":
+      return state.pendingLine === null ? state : { ...state, pendingLine: null };
+
+    case "add-line": {
+      const named = {
+        ...action.connector,
+        name: uniqueName(action.connector.name, slideNames(currentSlide(state))),
+      };
+      const next = patchSlide(state, (slide) => ({
+        ...slide,
+        objects: deriveFrames([...slide.objects, named]),
+      }));
+      return { ...next, selectedIds: [named.id], pendingLine: null };
+    }
+
     case "start-presentation":
-      return { ...state, presenting: true, selectedIds: [], textEditing: null };
+      return { ...state, presenting: true, selectedIds: [], textEditing: null, pendingLine: null };
 
     case "stop-presentation":
       return { ...state, presenting: false };
@@ -787,6 +843,7 @@ const UNDOABLE_ACTIONS: ReadonlySet<EditorAction["type"]> = new Set([
   "load-deck",
   "rename-object",
   "connect-selected",
+  "add-line",
 ] satisfies EditorAction["type"][]);
 
 /** High-frequency actions that coalesce while repeated back-to-back. */
@@ -888,6 +945,7 @@ function createInitialState(): EditorState {
     selectedIds: [],
     textEditing: null,
     presenting: false,
+    pendingLine: null,
   };
 }
 

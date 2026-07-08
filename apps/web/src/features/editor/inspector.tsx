@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@workspace/ui/components/select";
 import { Separator } from "@workspace/ui/components/separator";
+import { Slider } from "@workspace/ui/components/slider";
 import { Textarea } from "@workspace/ui/components/textarea";
 import { Toggle } from "@workspace/ui/components/toggle";
 import { ToggleGroup, ToggleGroupItem } from "@workspace/ui/components/toggle-group";
@@ -763,9 +764,10 @@ function ConnectorEndpointField({
   const slide = useCurrentSlide();
   const dispatch = useEditorDispatch();
   const reference = connector[endpoint];
-  const target = findObjectDeep(slide.objects, reference.objectId);
+  const target = reference.objectId ? findObjectDeep(slide.objects, reference.objectId) : undefined;
+  const targetLabel = reference.objectId ? (target?.name ?? "(不明)") : "自由な点";
   return (
-    <Field label={`${label}: ${target?.name ?? "(不明)"}`}>
+    <Field label={`${label}: ${targetLabel}`}>
       <Select
         value={reference.site}
         onValueChange={(site) =>
@@ -819,6 +821,18 @@ function ConnectorFields({ object }: { object: ConnectorObject }) {
         <ConnectorEndpointField label="始点" connector={object} endpoint="start" />
         <ConnectorEndpointField label="終点" connector={object} endpoint="end" />
       </div>
+      {object.connectorType === "bent" ? (
+        <Field label={`折れ位置 (${Math.round((object.bend ?? 0.5) * 100)}%)`}>
+          <Slider
+            min={0}
+            max={100}
+            step={1}
+            value={[Math.round((object.bend ?? 0.5) * 100)]}
+            data-testid="connector-bend"
+            onValueChange={([value]) => patch({ bend: (value ?? 50) / 100 })}
+          />
+        </Field>
+      ) : null}
       <Button
         variant="outline"
         size="sm"

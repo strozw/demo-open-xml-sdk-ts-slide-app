@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
   Layers,
   LoaderCircle,
+  Slash,
   SendToBack,
   Shapes,
   Spline,
@@ -390,6 +391,34 @@ export function EditorToolbar() {
               {definition.label}
             </DropdownMenuItem>
           ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant={state.pendingLine ? "default" : "outline"}
+            size="sm"
+            data-testid="add-line"
+          >
+            <Slash /> 線
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuLabel>線を描画</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            data-testid="add-line-straight"
+            onSelect={() => dispatch({ type: "start-line-tool", connectorType: "straight" })}
+          >
+            直線
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            data-testid="add-line-bent"
+            onSelect={() => dispatch({ type: "start-line-tool", connectorType: "bent" })}
+          >
+            カギ線
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
