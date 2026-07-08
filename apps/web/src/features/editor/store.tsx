@@ -9,7 +9,6 @@ import {
   createSlide,
   type Deck,
   type GroupObject,
-  type LeafObject,
   type Rect,
   type Slide,
   type SlideObject,
@@ -46,6 +45,123 @@ function currentSlide(state: EditorState): Slide {
   return slide ?? state.deck.slides[0]!;
 }
 
+// ---- Deep-tree helpers -----------------------------------------------------
+// Groups can nest, and objects selected from the object tree may live at any
+// depth, so structural operations walk the whole tree. A group's own frame is
+// always re-derived as the bounding box of its children afterwards.
+
+/** Re-derives every group frame (bounding box of its children), bottom-up. */
+function withDerivedFrames(object: SlideObject): SlideObject {
+  if (object.type !== "group") {
+    return object;
+  }
+  const children = object.children.map(withDerivedFrames);
+  return { ...object, ...boundingBox(children.map(objectBounds)), children };
+}
+
+function deriveFrames(objects: SlideObject[]): SlideObject[] {
+  return objects.map(withDerivedFrames);
+}
+
+/** Applies `transform` to the object with the given id, wherever it nests. */
+function patchObjectsDeep(
+  objects: SlideObject[],
+  id: string,
+  transform: (object: SlideObject) => SlideObject,
+): SlideObject[] {
+  return objects.map((object) => {
+    if (object.id === id) {
+      return transform(object);
+    }
+    if (object.type === "group") {
+      return { ...object, children: patchObjectsDeep(object.children, id, transform) };
+    }
+    return object;
+  });
+}
+
+/** Moves every selected subtree; unselected groups are traversed. */
+function translateSelectedDeep(
+  objects: SlideObject[],
+  selected: ReadonlySet<string>,
+  dx: number,
+  dy: number,
+): SlideObject[] {
+  return objects.map((object) => {
+    if (selected.has(object.id)) {
+      return translateObject(object, dx, dy);
+    }
+    if (object.type === "group") {
+      return { ...object, children: translateSelectedDeep(object.children, selected, dx, dy) };
+    }
+    return object;
+  });
+}
+
+/** Removes selected objects at any depth; groups left empty are dropped. */
+function deleteSelectedDeep(objects: SlideObject[], selected: ReadonlySet<string>): SlideObject[] {
+  const result: SlideObject[] = [];
+  for (const object of objects) {
+    if (selected.has(object.id)) {
+      continue;
+    }
+    if (object.type === "group") {
+      const children = deleteSelectedDeep(object.children, selected);
+      if (children.length === 0) {
+        continue;
+      }
+      result.push({ ...object, children });
+    } else {
+      result.push(object);
+    }
+  }
+  return result;
+}
+
+function regenerateIds<T extends SlideObject>(object: T): T {
+  if (object.type === "group") {
+    return { ...object, id: createId("object"), children: object.children.map(regenerateIds) };
+  }
+  return { ...object, id: createId("object") };
+}
+
+/** Inserts a shifted copy right after each selected object, at any depth. */
+function duplicateSelectedDeep(
+  objects: SlideObject[],
+  selected: ReadonlySet<string>,
+  copiedIds: string[],
+): SlideObject[] {
+  const result: SlideObject[] = [];
+  for (const object of objects) {
+    const visited =
+      object.type === "group"
+        ? { ...object, children: duplicateSelectedDeep(object.children, selected, copiedIds) }
+        : object;
+    result.push(visited);
+    if (selected.has(object.id)) {
+      const copy = regenerateIds(translateObject(visited, 24, 24));
+      copiedIds.push(copy.id);
+      result.push(copy);
+    }
+  }
+  return result;
+}
+
+function collectSelectedDeep(
+  objects: readonly SlideObject[],
+  selected: ReadonlySet<string>,
+  out: SlideObject[],
+): void {
+  for (const object of objects) {
+    if (selected.has(object.id)) {
+      out.push(object);
+    }
+    if (object.type === "group") {
+      collectSelectedDeep(object.children, selected, out);
+    }
+  }
+}
+
 function patchSlide(state: EditorState, updater: (slide: Slide) => Slide): EditorState {
   return {
     ...state,
@@ -71,16 +187,20 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
     case "update-object":
       return patchSlide(state, (slide) => ({
         ...slide,
-        objects: slide.objects.map((object) =>
-          object.id === action.id ? ({ ...object, ...action.patch } as SlideObject) : object,
+        objects: deriveFrames(
+          patchObjectsDeep(
+            slide.objects,
+            action.id,
+            (object) => ({ ...object, ...action.patch }) as SlideObject,
+          ),
         ),
       }));
 
     case "replace-object":
       return patchSlide(state, (slide) => ({
         ...slide,
-        objects: slide.objects.map((object) =>
-          object.id === action.object.id ? action.object : object,
+        objects: deriveFrames(
+          patchObjectsDeep(slide.objects, action.object.id, () => action.object),
         ),
       }));
 
@@ -99,19 +219,17 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       const selected = new Set(state.selectedIds);
       return patchSlide(state, (slide) => ({
         ...slide,
-        objects: slide.objects.map((object) =>
-          selected.has(object.id) ? translateObject(object, action.dx, action.dy) : object,
-        ),
+        objects: deriveFrames(translateSelectedDeep(slide.objects, selected, action.dx, action.dy)),
       }));
     }
 
     case "resize-object":
       return patchSlide(state, (slide) => ({
         ...slide,
-        objects: slide.objects.map((object) =>
-          object.id === action.id
-            ? fitObjectToFrame(object, objectBounds(object), action.frame)
-            : object,
+        objects: deriveFrames(
+          patchObjectsDeep(slide.objects, action.id, (object) =>
+            fitObjectToFrame(object, objectBounds(object), action.frame),
+          ),
         ),
       }));
 
@@ -119,35 +237,22 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       const selected = new Set(state.selectedIds);
       const next = patchSlide(state, (slide) => ({
         ...slide,
-        objects: slide.objects.filter((object) => !selected.has(object.id)),
+        objects: deriveFrames(deleteSelectedDeep(slide.objects, selected)),
       }));
       return { ...next, selectedIds: [] };
     }
 
     case "duplicate-selected": {
-      const slide = currentSlide(state);
       const selected = new Set(state.selectedIds);
-      const copies: SlideObject[] = [];
-      for (const object of slide.objects) {
-        if (!selected.has(object.id)) {
-          continue;
-        }
-        const moved = translateObject(object, 24, 24);
-        copies.push(
-          moved.type === "group"
-            ? {
-                ...moved,
-                id: createId("object"),
-                children: moved.children.map((child) => ({ ...child, id: createId("object") })),
-              }
-            : { ...moved, id: createId("object") },
-        );
-      }
-      if (copies.length === 0) {
+      const copiedIds: string[] = [];
+      const next = patchSlide(state, (slide) => ({
+        ...slide,
+        objects: deriveFrames(duplicateSelectedDeep(slide.objects, selected, copiedIds)),
+      }));
+      if (copiedIds.length === 0) {
         return state;
       }
-      const next = patchSlide(state, (s) => ({ ...s, objects: [...s.objects, ...copies] }));
-      return { ...next, selectedIds: copies.map((c) => c.id) };
+      return { ...next, selectedIds: copiedIds };
     }
 
     case "group-selected": {
@@ -157,18 +262,16 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       if (members.length < 2) {
         return state;
       }
-      // Nested groups flatten into the new group; children stay in absolute
-      // slide coordinates so the exported group frame maps 1:1.
-      const children: LeafObject[] = members.flatMap((object) =>
-        object.type === "group" ? object.children : [object],
-      );
-      const frame = boundingBox(children.map(objectBounds));
+      // Members keep their own structure, so grouping a group nests it.
+      // Children stay in absolute slide coordinates; the group frame is the
+      // bounding box of its members.
+      const frame = boundingBox(members.map(objectBounds));
       const group: GroupObject = {
         id: createId("object"),
         name: "Group",
         type: "group",
         ...frame,
-        children,
+        children: members,
       };
       const remaining = slide.objects.filter((object) => !selected.has(object.id));
       const next = patchSlide(state, (s) => ({ ...s, objects: [...remaining, group] }));
@@ -300,5 +403,9 @@ export function useSelectedObjects(): SlideObject[] {
   const state = useEditorState();
   const slide = currentSlide(state);
   const selected = new Set(state.selectedIds);
-  return slide.objects.filter((object) => selected.has(object.id));
+  // The object tree can select objects nested inside groups, so resolve
+  // selection at any depth.
+  const out: SlideObject[] = [];
+  collectSelectedDeep(slide.objects, selected, out);
+  return out;
 }

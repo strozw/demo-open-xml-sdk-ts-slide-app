@@ -109,13 +109,14 @@ export interface ChartDoc {
 /**
  * Group children keep ABSOLUTE slide coordinates: the generator writes the
  * group's child offset/extent (`a:chOff`/`a:chExt`) equal to the group frame
- * itself, so no coordinate re-mapping happens inside the group.
+ * itself, so no coordinate re-mapping happens inside the group. Because that
+ * identity mapping holds at every level, groups can nest arbitrarily.
  */
 export interface GroupDoc {
   type: "group";
   name: string;
   frame: FrameEmu;
-  children: (ShapeDoc | ChartDoc)[];
+  children: SlideChildDoc[];
 }
 
 export type SlideChildDoc = ShapeDoc | ChartDoc | GroupDoc;

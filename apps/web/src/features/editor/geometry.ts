@@ -37,11 +37,7 @@ export function translateObject<T extends SlideObject>(object: T, dx: number, dy
       ...object,
       x: object.x + dx,
       y: object.y + dy,
-      children: object.children.map((child) => ({
-        ...child,
-        x: child.x + dx,
-        y: child.y + dy,
-      })),
+      children: object.children.map((child) => translateObject(child, dx, dy)),
     };
   }
   return { ...object, x: object.x + dx, y: object.y + dy };
@@ -58,10 +54,12 @@ export function fitObjectToFrame<T extends SlideObject>(object: T, from: Rect, t
     height: r.height * scaleY,
   });
   if (object.type === "group") {
+    // The same slide-global affine map applies at every nesting level, so
+    // recursion keeps nested groups and their children consistent.
     return {
       ...object,
       ...map(objectBounds(object)),
-      children: object.children.map((child) => ({ ...child, ...map(objectBounds(child)) })),
+      children: object.children.map((child) => fitObjectToFrame(child, from, to)),
     };
   }
   return { ...object, ...map(objectBounds(object)) };

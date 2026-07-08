@@ -21,7 +21,7 @@ import { CHART_META_EXT_URI, PNG_TEXT_KEYWORD, readChartMeta } from "../src/lib/
 import { insertPngTextChunk, readPngTextChunk } from "../src/lib/png-text";
 import type { ChartRasterizer } from "../src/lib/rasterize-chart";
 import { createTextContent } from "../src/features/editor/types";
-import type { ChartObject, Deck, LeafObject, TextContent } from "../src/features/editor/types";
+import type { ChartObject, Deck, SlideObject, TextContent } from "../src/features/editor/types";
 
 const EMU_PER_PX = 9525;
 
@@ -250,6 +250,96 @@ const deck: Deck = {
           ],
           showLegend: true,
         },
+        {
+          // Nested group: a group whose child is itself a group. Frames are
+          // the bounding boxes of the (absolute-coordinate) children.
+          id: "g2",
+          name: "Outer",
+          type: "group",
+          x: 900,
+          y: 400,
+          width: 220,
+          height: 100,
+          children: [
+            {
+              id: "o5",
+              name: "OuterRect",
+              type: "shape",
+              shape: "rect",
+              x: 900,
+              y: 400,
+              width: 50,
+              height: 50,
+              fill: "#5b9bd5",
+              outlineColor: "#000000",
+              outlineWidth: 0,
+              text: {
+                text: "",
+                fontSize: 18,
+                bold: false,
+                italic: false,
+                color: "#000000",
+                align: "center",
+                verticalAlign: "center",
+              },
+            },
+            {
+              id: "g3",
+              name: "Inner",
+              type: "group",
+              x: 1000,
+              y: 420,
+              width: 120,
+              height: 80,
+              children: [
+                {
+                  id: "o6",
+                  name: "InnerA",
+                  type: "shape",
+                  shape: "ellipse",
+                  x: 1000,
+                  y: 420,
+                  width: 60,
+                  height: 40,
+                  fill: "#a855f7",
+                  outlineColor: "#000000",
+                  outlineWidth: 0,
+                  text: {
+                    text: "",
+                    fontSize: 18,
+                    bold: false,
+                    italic: false,
+                    color: "#000000",
+                    align: "center",
+                    verticalAlign: "center",
+                  },
+                },
+                {
+                  id: "o7",
+                  name: "InnerB",
+                  type: "shape",
+                  shape: "rect",
+                  x: 1060,
+                  y: 460,
+                  width: 60,
+                  height: 40,
+                  fill: "#ffc000",
+                  outlineColor: "#000000",
+                  outlineWidth: 0,
+                  text: {
+                    text: "",
+                    fontSize: 18,
+                    bold: false,
+                    italic: false,
+                    color: "#000000",
+                    align: "center",
+                    verticalAlign: "center",
+                  },
+                },
+              ],
+            },
+          ],
+        },
       ],
     },
   ],
@@ -365,6 +455,17 @@ assert.ok(slide1.includes("graphicFrame"), "chart graphicFrame on slide 1");
 assert.ok(slide2.includes("graphicFrame"), "chart graphicFrame on slide 2");
 assert.ok(slide1.includes("<c:chart"), "chart reference element on slide 1");
 
+// Nested group: slide 3 carries a p:grpSp inside a p:grpSp, each with
+// chOff == off (absolute child coordinates at every level).
+const slide3 = entries.get("ppt/slides/slide3.xml")!.toString("utf8");
+assert.equal((slide3.match(/<p:grpSp>/g) ?? []).length, 2, "nested grpSp on slide 3");
+const innerGroupXfrm =
+  `<a:off x='${1000 * EMU_PER_PX}' y='${420 * EMU_PER_PX}' />` +
+  `<a:ext cx='${120 * EMU_PER_PX}' cy='${80 * EMU_PER_PX}' />` +
+  `<a:chOff x='${1000 * EMU_PER_PX}' y='${420 * EMU_PER_PX}' />` +
+  `<a:chExt cx='${120 * EMU_PER_PX}' cy='${80 * EMU_PER_PX}' />`;
+assert.ok(slide3.includes(innerGroupXfrm), "inner group chOff/chExt equals its absolute frame");
+
 // Chart parts contain the right plot types and data.
 const chartXmls = names
   .filter((name) => /ppt\/charts\/chart\d+\.xml/.test(name))
@@ -470,6 +571,9 @@ assert.deepEqual(
 // Opening the generated file restores the editor model. Ids are regenerated
 // on import and empty-text styling is not serialized, so both sides are
 // normalized before comparing.
+const normalizeText = (content: TextContent): TextContent =>
+  content.text ? content : { ...createTextContent(), text: "" };
+
 function normalizeDeck(source: Deck): Deck {
   const clone = structuredClone(source);
   let counter = 0;
@@ -477,9 +581,7 @@ function normalizeDeck(source: Deck): Deck {
     counter += 1;
     return `id-${counter}`;
   };
-  const normalizeText = (content: TextContent): TextContent =>
-    content.text ? content : { ...createTextContent(), text: "" };
-  const normalizeLeaf = (object: LeafObject): void => {
+  const normalizeObject = (object: SlideObject): void => {
     object.id = nextId();
     if (object.type === "shape" || object.type === "text") {
       object.text = normalizeText(object.text);
@@ -487,18 +589,13 @@ function normalizeDeck(source: Deck): Deck {
       for (const series of object.series) {
         series.id = nextId();
       }
+    } else if (object.type === "group") {
+      object.children.forEach(normalizeObject);
     }
   };
   for (const slide of clone.slides) {
     slide.id = nextId();
-    for (const object of slide.objects) {
-      if (object.type === "group") {
-        object.id = nextId();
-        object.children.forEach(normalizeLeaf);
-      } else {
-        normalizeLeaf(object);
-      }
-    }
+    slide.objects.forEach(normalizeObject);
   }
   return clone;
 }

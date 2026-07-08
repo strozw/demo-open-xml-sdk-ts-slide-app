@@ -9,7 +9,12 @@ import { ObjectContent } from "./object-view";
 import { useEditorDispatch, useEditorState } from "./store";
 import { SLIDE_HEIGHT, SLIDE_WIDTH } from "./types";
 
-const THUMB_WIDTH = 168;
+// Thumbnails must exactly fill the card's inner box or the scaled slide
+// leaves blank space: sidebar w-56 (224px) minus the list padding px-3
+// (12px × 2), the page-number column w-5 (20px), the gap-2 (8px), and the
+// card border-2 (2px × 2). The card contains nothing but the thumbnail, so
+// its height is the 16:9 scaled height with no leftover space below.
+const THUMB_WIDTH = 224 - 12 * 2 - 20 - 8 - 2 * 2;
 const THUMB_SCALE = THUMB_WIDTH / SLIDE_WIDTH;
 
 export function SlideList() {
@@ -17,7 +22,7 @@ export function SlideList() {
   const dispatch = useEditorDispatch();
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar" data-testid="slide-list">
+    <div className="flex h-full flex-col" data-testid="slide-list">
       <div className="flex items-center justify-between px-3 py-2">
         <h2 className="text-sm font-semibold">スライド</h2>
         <Button
@@ -34,12 +39,21 @@ export function SlideList() {
         {state.deck.slides.map((slide, index) => {
           const active = slide.id === state.currentSlideId;
           return (
-            <div key={slide.id} className="group relative">
+            <div key={slide.id} className="group relative flex gap-2">
+              <p
+                className={cn(
+                  "w-5 shrink-0 pt-0.5 text-right text-xs",
+                  active ? "font-semibold text-primary" : "text-muted-foreground",
+                )}
+              >
+                {index + 1}
+              </p>
               <button
                 type="button"
                 data-testid={`slide-thumb-${index}`}
+                aria-label={`スライド ${index + 1}`}
                 className={cn(
-                  "block w-full overflow-hidden rounded-md border-2 bg-white text-left shadow-sm transition-colors",
+                  "block overflow-hidden rounded-md border-2 bg-white text-left shadow-sm transition-colors",
                   active ? "border-primary" : "border-transparent hover:border-muted-foreground/40",
                 )}
                 onClick={() => dispatch({ type: "select-slide", id: slide.id })}
@@ -74,7 +88,6 @@ export function SlideList() {
                     ))}
                   </div>
                 </div>
-                <p className="px-2 py-1 text-xs text-muted-foreground">{index + 1}</p>
               </button>
               {state.deck.slides.length > 1 ? (
                 <Button
@@ -91,6 +104,6 @@ export function SlideList() {
           );
         })}
       </div>
-    </aside>
+    </div>
   );
 }

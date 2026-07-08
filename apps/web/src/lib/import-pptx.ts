@@ -244,13 +244,18 @@ async function parseGroup(
 ): Promise<GroupObject> {
   const name = grpSp.element(P.nvGrpSpPr)?.element(P.cNvPr)?.attribute("name")?.value ?? "グループ";
   const frame = parseXfrm(grpSp.element(P.grpSpPr)?.element(A.xfrm), `グループ「${name}」`);
-  const children: LeafObject[] = [];
+  const children: SlideObject[] = [];
   for (const child of grpSp.elements()) {
     if (child.name === P.nvGrpSpPr || child.name === P.grpSpPr) {
       continue;
     }
-    // Child coordinates are absolute (the exporter writes chOff == off).
-    children.push(await parseLeaf(child, relTargets, pkg));
+    // Child coordinates are absolute (the exporter writes chOff == off at
+    // every level), so nested groups parse with the same recursion.
+    if (child.name === P.grpSp) {
+      children.push(await parseGroup(child, relTargets, pkg));
+    } else {
+      children.push(await parseLeaf(child, relTargets, pkg));
+    }
   }
   return { id: createId("object"), name, type: "group", ...frame, children };
 }

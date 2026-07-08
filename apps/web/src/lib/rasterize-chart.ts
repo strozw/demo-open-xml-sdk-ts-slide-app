@@ -31,8 +31,12 @@ export const rasterizeChartToPng: ChartRasterizer = async (chart, scale = 2) => 
   // encodeURIComponent keeps non-Latin-1 text (Japanese labels) intact.
   image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
   await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
-    image.onerror = () => reject(new Error("チャート画像のレンダリングに失敗しました"));
+    image.addEventListener("load", () => resolve(), { once: true });
+    image.addEventListener(
+      "error",
+      () => reject(new Error("チャート画像のレンダリングに失敗しました")),
+      { once: true },
+    );
   });
 
   const canvas = document.createElement("canvas");

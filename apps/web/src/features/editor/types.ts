@@ -101,10 +101,14 @@ export interface ChartObject extends BaseObject {
  * The exporter writes the group frame's chOff/chExt equal to its
  * offset/extent, so exported child coordinates stay absolute too — keeping
  * the editor model absolute makes export a 1:1 mapping.
+ *
+ * Groups can nest: children may themselves be groups. A group's own frame is
+ * always the bounding box of its children (the store re-derives it after
+ * every structural change).
  */
 export interface GroupObject extends BaseObject {
   type: "group";
-  children: LeafObject[];
+  children: SlideObject[];
 }
 
 export type LeafObject = ShapeObject | TextObject | ChartObject;

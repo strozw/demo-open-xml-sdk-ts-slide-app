@@ -162,7 +162,12 @@ async function groupChild(object: GroupObject, rasterize?: ChartRasterizer): Pro
     type: "group",
     name: object.name,
     frame: frame(boundingBox(object.children.map(objectBounds))),
-    children: await Promise.all(object.children.map((child) => leafChild(child, rasterize))),
+    children: await Promise.all(
+      object.children.map(
+        (child): Promise<SlideChildDoc> =>
+          child.type === "group" ? groupChild(child, rasterize) : leafChild(child, rasterize),
+      ),
+    ),
   };
 }
 
