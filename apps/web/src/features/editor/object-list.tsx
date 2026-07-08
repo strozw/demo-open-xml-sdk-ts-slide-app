@@ -57,6 +57,9 @@ function TreeNode({
   collapsed,
   onToggleCollapse,
   dnd,
+  renamingId,
+  onStartRename,
+  onFinishRename,
 }: {
   object: SlideObject;
   parentId: string | null;
@@ -64,6 +67,9 @@ function TreeNode({
   collapsed: ReadonlySet<string>;
   onToggleCollapse: (id: string) => void;
   dnd: TreeDnd;
+  renamingId: string | null;
+  onStartRename: (id: string) => void;
+  onFinishRename: () => void;
 }) {
   const state = useEditorState();
   const dispatch = useEditorDispatch();
@@ -72,6 +78,61 @@ function TreeNode({
   const isCollapsed = collapsed.has(object.id);
   const isDragging = dnd.dragging?.id === object.id;
   const dropEdge = dnd.dropTarget?.id === object.id ? dnd.dropTarget.edge : null;
+
+  if (renamingId === object.id) {
+    const commit = (input: HTMLInputElement) => {
+      const trimmed = input.value.trim();
+      if (trimmed && trimmed !== object.name) {
+        dispatch({ type: "rename-object", id: object.id, name: trimmed });
+      }
+      onFinishRename();
+    };
+    return (
+      <>
+        <div
+          className="flex w-full items-center gap-1.5 rounded-md bg-primary/10 py-0.5 pr-2 text-xs"
+          style={{ paddingLeft: 8 + depth * 14 + 18 }}
+        >
+          <ObjectIcon object={object} />
+          <input
+            autoFocus
+            defaultValue={object.name}
+            aria-label="オブジェクト名"
+            data-testid={`object-node-rename-${object.id}`}
+            className="min-w-0 flex-1 rounded border border-primary/50 bg-background px-1 py-0.5 outline-none"
+            onFocus={(event) => event.target.select()}
+            onBlur={(event) => commit(event.currentTarget)}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") {
+                commit(event.currentTarget);
+              } else if (event.key === "Escape") {
+                // Reset the value first so the following blur commit no-ops.
+                event.currentTarget.value = object.name;
+                onFinishRename();
+              }
+            }}
+          />
+        </div>
+        {isGroup && !isCollapsed
+          ? frontToBack(object.children).map((child) => (
+              <TreeNode
+                key={child.id}
+                object={child}
+                parentId={object.id}
+                depth={depth + 1}
+                collapsed={collapsed}
+                onToggleCollapse={onToggleCollapse}
+                dnd={dnd}
+                renamingId={renamingId}
+                onStartRename={onStartRename}
+                onFinishRename={onFinishRename}
+              />
+            ))
+          : null}
+      </>
+    );
+  }
 
   return (
     <>
@@ -96,6 +157,8 @@ function TreeNode({
             ? dispatch({ type: "toggle-selected", id: object.id })
             : dispatch({ type: "set-selection", ids: [object.id] })
         }
+        onDoubleClick={() => onStartRename(object.id)}
+        title="ダブルクリックで名前を変更"
       >
         {isGroup ? (
           <span
@@ -142,6 +205,9 @@ function TreeNode({
               collapsed={collapsed}
               onToggleCollapse={onToggleCollapse}
               dnd={dnd}
+              renamingId={renamingId}
+              onStartRename={onStartRename}
+              onFinishRename={onFinishRename}
             />
           ))
         : null}
@@ -161,6 +227,7 @@ export function ObjectList() {
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(new Set());
   const [dragging, setDragging] = React.useState<DragSource | null>(null);
   const [dropTarget, setDropTarget] = React.useState<{ id: string; edge: DropEdge } | null>(null);
+  const [renamingId, setRenamingId] = React.useState<string | null>(null);
 
   const toggleCollapse = (id: string) => {
     setCollapsed((previous) => {
@@ -242,6 +309,9 @@ export function ObjectList() {
               collapsed={collapsed}
               onToggleCollapse={toggleCollapse}
               dnd={dnd}
+              renamingId={renamingId}
+              onStartRename={setRenamingId}
+              onFinishRename={() => setRenamingId(null)}
             />
           ))
         )}

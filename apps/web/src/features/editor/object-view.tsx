@@ -55,44 +55,42 @@ function ShapeSvg({ object }: { object: ShapeObject }) {
   const width = Math.max(1, object.width);
   const height = Math.max(1, object.height);
 
+  // Matches how PowerPoint draws a:ln: the geometry keeps its full size and
+  // the stroke straddles the outline (half inside, half outside), so the
+  // border stays perfectly uniform for any shape. The svg must not clip
+  // (overflow visible) or the outer half would be cut off unevenly; round
+  // joins keep sharp vertices (star points etc.) from being flattened by
+  // the default miter limit.
+  const strokeProps = {
+    fill: object.fill,
+    stroke,
+    strokeWidth,
+    strokeLinejoin: "round",
+  } as const;
+
   let element: React.ReactNode;
   if (object.shape === "ellipse") {
     element = (
-      <ellipse
-        cx={width / 2}
-        cy={height / 2}
-        rx={width / 2 - strokeWidth / 2}
-        ry={height / 2 - strokeWidth / 2}
-        fill={object.fill}
-        stroke={stroke}
-        strokeWidth={strokeWidth}
-      />
+      <ellipse cx={width / 2} cy={height / 2} rx={width / 2} ry={height / 2} {...strokeProps} />
     );
   } else if (definition.polygon) {
     const points = definition.polygon.map(([px, py]) => `${px * width},${py * height}`).join(" ");
-    element = (
-      <polygon points={points} fill={object.fill} stroke={stroke} strokeWidth={strokeWidth} />
-    );
+    element = <polygon points={points} {...strokeProps} />;
   } else {
     // PowerPoint's roundRect default corner radius is adj=16667 (1/6 of the
     // shorter side).
     const radius = object.shape === "roundRect" ? Math.min(width, height) / 6 : 0;
-    element = (
-      <rect
-        x={strokeWidth / 2}
-        y={strokeWidth / 2}
-        width={width - strokeWidth}
-        height={height - strokeWidth}
-        rx={radius}
-        fill={object.fill}
-        stroke={stroke}
-        strokeWidth={strokeWidth}
-      />
-    );
+    element = <rect x={0} y={0} width={width} height={height} rx={radius} {...strokeProps} />;
   }
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%" preserveAspectRatio="none">
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      width="100%"
+      height="100%"
+      preserveAspectRatio="none"
+      style={{ overflow: "visible" }}
+    >
       {element}
     </svg>
   );

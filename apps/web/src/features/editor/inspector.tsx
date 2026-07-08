@@ -772,18 +772,58 @@ export function Inspector() {
   );
 }
 
+/**
+ * Object name editor. Commits on blur / Enter; the store makes the final
+ * name unique within the slide (a numeric suffix is appended on collision).
+ */
+function NameField({ object }: { object: SlideObject }) {
+  const dispatch = useEditorDispatch();
+  const [value, setValue] = React.useState(object.name);
+
+  // Follow store-side changes (selection change, suffix appended on commit).
+  React.useEffect(() => {
+    setValue(object.name);
+  }, [object.id, object.name]);
+
+  const commit = () => {
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== object.name) {
+      dispatch({ type: "rename-object", id: object.id, name: trimmed });
+    } else {
+      setValue(object.name);
+    }
+  };
+
+  return (
+    <Field label="名前">
+      <Input
+        value={value}
+        className="h-8"
+        data-testid="object-name-input"
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          } else if (event.key === "Escape") {
+            setValue(object.name);
+          }
+        }}
+      />
+    </Field>
+  );
+}
+
 function SingleObjectFields({ object }: { object: SlideObject }) {
   return (
     <div className="space-y-4">
-      <div>
-        <h3 className="text-sm font-semibold">{object.name}</h3>
-        <p className="text-xs text-muted-foreground">
-          {object.type === "shape" && "図形"}
-          {object.type === "text" && "テキスト"}
-          {object.type === "chart" && chartLabel(object.chartType)}
-          {object.type === "group" && `グループ (${object.children.length} 個)`}
-        </p>
-      </div>
+      <h3 className="text-sm font-semibold">
+        {object.type === "shape" && "図形"}
+        {object.type === "text" && "テキスト"}
+        {object.type === "chart" && chartLabel(object.chartType)}
+        {object.type === "group" && `グループ (${object.children.length} 個)`}
+      </h3>
+      <NameField object={object} />
       <FrameFields object={object} />
       {object.type === "shape" ? (
         <>

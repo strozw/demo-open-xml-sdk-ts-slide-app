@@ -49,7 +49,8 @@ export type EditorAction =
   | { type: "load-deck"; deck: Deck }
   | { type: "start-text-edit"; id: string }
   | { type: "end-text-edit" }
-  | { type: "set-text-selection"; start: number; end: number };
+  | { type: "set-text-selection"; start: number; end: number }
+  | { type: "rename-object"; id: string; name: string };
 
 function currentSlide(state: EditorState): Slide {
   const slide = state.deck.slides.find((s) => s.id === state.currentSlideId);
@@ -136,21 +137,89 @@ function regenerateIds<T extends SlideObject>(object: T): T {
   return { ...object, id: createId("object") };
 }
 
+// ---- Name uniqueness -------------------------------------------------------
+// Object names stay unique within a slide: new objects and renames get a
+// numeric suffix on collision, duplicated objects get a "コピー" suffix.
+
+function collectNamesDeep(
+  objects: readonly SlideObject[],
+  taken: Set<string>,
+  excludeId?: string,
+): void {
+  for (const object of objects) {
+    if (object.id !== excludeId) {
+      taken.add(object.name);
+    }
+    if (object.type === "group") {
+      collectNamesDeep(object.children, taken, excludeId);
+    }
+  }
+}
+
+function slideNames(slide: Slide, excludeId?: string): Set<string> {
+  const taken = new Set<string>();
+  collectNamesDeep(slide.objects, taken, excludeId);
+  return taken;
+}
+
+/** `desired`, or `desired 1`, `desired 2`, ... — first free wins. */
+function uniqueName(desired: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(desired)) {
+    return desired;
+  }
+  for (let n = 1; ; n += 1) {
+    const candidate = `${desired} ${n}`;
+    if (!taken.has(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+/** `base コピー`, then `base コピー1`, `base コピー2`, ... */
+function copyName(base: string, taken: ReadonlySet<string>): string {
+  let candidate = `${base} コピー`;
+  for (let n = 1; taken.has(candidate); n += 1) {
+    candidate = `${base} コピー${n}`;
+  }
+  return candidate;
+}
+
+/** Renames a copied subtree so every node gets a unique コピー name. */
+function renameCopiedDeep(object: SlideObject, taken: Set<string>): SlideObject {
+  const name = copyName(object.name, taken);
+  taken.add(name);
+  if (object.type === "group") {
+    return {
+      ...object,
+      name,
+      children: object.children.map((child) => renameCopiedDeep(child, taken)),
+    };
+  }
+  return { ...object, name };
+}
+
 /** Inserts a shifted copy right after each selected object, at any depth. */
 function duplicateSelectedDeep(
   objects: SlideObject[],
   selected: ReadonlySet<string>,
   copiedIds: string[],
+  takenNames: Set<string>,
 ): SlideObject[] {
   const result: SlideObject[] = [];
   for (const object of objects) {
     const visited =
       object.type === "group"
-        ? { ...object, children: duplicateSelectedDeep(object.children, selected, copiedIds) }
+        ? {
+            ...object,
+            children: duplicateSelectedDeep(object.children, selected, copiedIds, takenNames),
+          }
         : object;
     result.push(visited);
     if (selected.has(object.id)) {
-      const copy = regenerateIds(translateObject(visited, 24, 24));
+      const copy = renameCopiedDeep(
+        regenerateIds(translateObject(visited, 24, 24)),
+        takenNames,
+      ) as SlideObject;
       copiedIds.push(copy.id);
       result.push(copy);
     }
@@ -232,11 +301,15 @@ function patchSlide(state: EditorState, updater: (slide: Slide) => Slide): Edito
 function editorReducer(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "add-object": {
+      const named = {
+        ...action.object,
+        name: uniqueName(action.object.name, slideNames(currentSlide(state))),
+      } as SlideObject;
       const next = patchSlide(state, (slide) => ({
         ...slide,
-        objects: [...slide.objects, action.object],
+        objects: [...slide.objects, named],
       }));
-      return { ...next, selectedIds: [action.object.id] };
+      return { ...next, selectedIds: [named.id] };
     }
 
     case "update-object":
@@ -302,7 +375,9 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       const copiedIds: string[] = [];
       const next = patchSlide(state, (slide) => ({
         ...slide,
-        objects: deriveFrames(duplicateSelectedDeep(slide.objects, selected, copiedIds)),
+        objects: deriveFrames(
+          duplicateSelectedDeep(slide.objects, selected, copiedIds, slideNames(slide)),
+        ),
       }));
       if (copiedIds.length === 0) {
         return state;
@@ -323,7 +398,7 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       const frame = boundingBox(members.map(objectBounds));
       const group: GroupObject = {
         id: createId("object"),
-        name: "Group",
+        name: uniqueName("グループ", slideNames(slide)),
         type: "group",
         ...frame,
         children: members,
@@ -444,6 +519,20 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
             },
           }
         : state;
+
+    case "rename-object": {
+      const desired = action.name.trim();
+      if (!desired) {
+        return state;
+      }
+      // Exclude the object itself so renaming to its current name is a no-op
+      // instead of gaining a suffix.
+      const name = uniqueName(desired, slideNames(currentSlide(state), action.id));
+      return patchSlide(state, (slide) => ({
+        ...slide,
+        objects: patchObjectsDeep(slide.objects, action.id, (object) => ({ ...object, name })),
+      }));
+    }
 
     default:
       return state;
