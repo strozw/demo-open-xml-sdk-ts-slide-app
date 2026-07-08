@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Maximize, Minimize } from "lucide-react";
+import { Maximize, Minimize, Square } from "lucide-react";
 
 import { Button } from "@workspace/ui/components/button";
 
@@ -110,16 +110,34 @@ export function PresentationView() {
         </div>
       </div>
 
-      <Button
-        variant="secondary"
-        size="icon-sm"
-        aria-label={isFullscreen ? "全画面を終了" : "全画面表示"}
-        data-testid="presentation-fullscreen"
-        className="absolute right-3 top-3 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-        onClick={toggleFullscreen}
-      >
-        {isFullscreen ? <Minimize /> : <Maximize />}
-      </Button>
+      <div className="absolute right-3 top-3 flex items-center gap-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+        <Button
+          variant="secondary"
+          size="icon-sm"
+          aria-label="再生を停止して編集に戻る"
+          title="再生を停止して編集に戻る"
+          data-testid="presentation-stop"
+          onClick={() => {
+            // Leave fullscreen too, so the editor comes back in-window.
+            if (document.fullscreenElement) {
+              void document.exitFullscreen();
+            }
+            dispatch({ type: "stop-presentation" });
+          }}
+        >
+          <Square />
+        </Button>
+        <Button
+          variant="secondary"
+          size="icon-sm"
+          aria-label={isFullscreen ? "全画面を終了" : "全画面表示"}
+          title={isFullscreen ? "全画面を終了" : "全画面表示"}
+          data-testid="presentation-fullscreen"
+          onClick={toggleFullscreen}
+        >
+          {isFullscreen ? <Minimize /> : <Maximize />}
+        </Button>
+      </div>
 
       <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded bg-black/50 px-2 py-0.5 text-xs text-white/80">
         {slideIndex + 1} / {state.deck.slides.length}
