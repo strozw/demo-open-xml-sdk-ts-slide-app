@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Play, Plus, Square, Trash2 } from "lucide-react";
 
 import { Button } from "@workspace/ui/components/button";
 import {
@@ -22,6 +22,52 @@ import { SLIDE_HEIGHT, SLIDE_WIDTH } from "./types";
 // its height is the 16:9 scaled height with no leftover space below.
 const THUMB_WIDTH = 224 - 12 * 2 - 20 - 8 - 2 * 2;
 const THUMB_SCALE = THUMB_WIDTH / SLIDE_WIDTH;
+
+/** Fixed playback controls at the bottom of the slide list. */
+function PlaybackControls() {
+  const state = useEditorState();
+  const dispatch = useEditorDispatch();
+  const index = state.deck.slides.findIndex((slide) => slide.id === state.currentSlideId);
+
+  return (
+    <div
+      className="flex shrink-0 items-center justify-center gap-1 border-t bg-sidebar px-3 py-2"
+      data-testid="playback-controls"
+    >
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="前のスライドへ"
+        data-testid="playback-prev"
+        disabled={index <= 0}
+        onClick={() => dispatch({ type: "step-slide", delta: -1 })}
+      >
+        <ChevronLeft />
+      </Button>
+      <Button
+        variant={state.presenting ? "default" : "outline"}
+        size="icon-sm"
+        aria-label={state.presenting ? "停止" : "再生"}
+        data-testid="playback-toggle"
+        onClick={() =>
+          dispatch({ type: state.presenting ? "stop-presentation" : "start-presentation" })
+        }
+      >
+        {state.presenting ? <Square /> : <Play />}
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="次のスライドへ"
+        data-testid="playback-next"
+        disabled={index >= state.deck.slides.length - 1}
+        onClick={() => dispatch({ type: "step-slide", delta: 1 })}
+      >
+        <ChevronRight />
+      </Button>
+    </div>
+  );
+}
 
 export function SlideList() {
   const state = useEditorState();
@@ -129,6 +175,7 @@ export function SlideList() {
           );
         })}
       </div>
+      <PlaybackControls />
     </div>
   );
 }

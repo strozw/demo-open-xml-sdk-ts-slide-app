@@ -33,6 +33,8 @@ export interface EditorState {
    * character styling to the selection.
    */
   textEditing: { objectId: string; selectionStart: number; selectionEnd: number } | null;
+  /** Slideshow playback: replaces the canvas with the read-only view. */
+  presenting: boolean;
 }
 
 export type EditorAction =
@@ -59,7 +61,10 @@ export type EditorAction =
   | { type: "end-text-edit" }
   | { type: "set-text-selection"; start: number; end: number }
   | { type: "rename-object"; id: string; name: string }
-  | { type: "connect-selected" };
+  | { type: "connect-selected" }
+  | { type: "start-presentation" }
+  | { type: "stop-presentation" }
+  | { type: "step-slide"; delta: 1 | -1 };
 
 function currentSlide(state: EditorState): Slide {
   const slide = state.deck.slides.find((s) => s.id === state.currentSlideId);
@@ -593,6 +598,7 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
         currentSlideId: action.deck.slides[0]!.id,
         selectedIds: [],
         textEditing: null,
+        presenting: false,
       };
 
     case "start-text-edit":
@@ -616,6 +622,21 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
             },
           }
         : state;
+
+    case "start-presentation":
+      return { ...state, presenting: true, selectedIds: [], textEditing: null };
+
+    case "stop-presentation":
+      return { ...state, presenting: false };
+
+    case "step-slide": {
+      const index = state.deck.slides.findIndex((slide) => slide.id === state.currentSlideId);
+      const next = Math.max(0, Math.min(state.deck.slides.length - 1, index + action.delta));
+      if (next === index) {
+        return state;
+      }
+      return { ...state, currentSlideId: state.deck.slides[next]!.id, selectedIds: [] };
+    }
 
     case "connect-selected": {
       const slide = currentSlide(state);
@@ -700,7 +721,13 @@ function editorReducerWithInvariants(state: EditorState, action: EditorAction): 
 
 function createInitialState(): EditorState {
   const deck = createDeck();
-  return { deck, currentSlideId: deck.slides[0]!.id, selectedIds: [], textEditing: null };
+  return {
+    deck,
+    currentSlideId: deck.slides[0]!.id,
+    selectedIds: [],
+    textEditing: null,
+    presenting: false,
+  };
 }
 
 const EditorStateContext = React.createContext<EditorState | null>(null);
