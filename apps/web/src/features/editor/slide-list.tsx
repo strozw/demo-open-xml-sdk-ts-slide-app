@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, Play, Plus, Square, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, Play, Plus, Square, Trash2 } from "lucide-react";
 
 import { Button } from "@workspace/ui/components/button";
 import {
@@ -162,6 +162,12 @@ export function SlideList() {
                 </div>
               </ContextMenuTrigger>
               <ContextMenuContent>
+                <ContextMenuItem
+                  data-testid={`slide-context-duplicate-${index}`}
+                  onSelect={() => dispatch({ type: "duplicate-slide", id: slide.id })}
+                >
+                  <Copy /> 複製
+                </ContextMenuItem>
                 <ContextMenuItem
                   variant="destructive"
                   disabled={state.deck.slides.length <= 1}

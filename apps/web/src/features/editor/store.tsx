@@ -52,6 +52,7 @@ export type EditorAction =
   | { type: "reorder-selected"; direction: "front" | "back" }
   | { type: "reorder-object"; id: string; targetId: string; position: "before" | "after" }
   | { type: "add-slide" }
+  | { type: "duplicate-slide"; id: string }
   | { type: "remove-slide"; id: string }
   | { type: "select-slide"; id: string }
   | { type: "set-slide-background"; color: string }
@@ -568,6 +569,46 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
       };
     }
 
+    case "duplicate-slide": {
+      const index = state.deck.slides.findIndex((s) => s.id === action.id);
+      const source = state.deck.slides[index];
+      if (!source) {
+        return state;
+      }
+      // Fresh ids for every object; copied connectors re-point to the
+      // copied endpoints. Names stay as-is (uniqueness is per slide).
+      const idMap = new Map<string, string>();
+      const objects = source.objects.map((object) => regenerateIds(object, idMap));
+      const remapped = objects.map((object) =>
+        object.type === "connector"
+          ? {
+              ...object,
+              start: {
+                ...object.start,
+                objectId: idMap.get(object.start.objectId) ?? object.start.objectId,
+              },
+              end: {
+                ...object.end,
+                objectId: idMap.get(object.end.objectId) ?? object.end.objectId,
+              },
+            }
+          : object,
+      );
+      const copy: Slide = {
+        id: createId("slide"),
+        background: source.background,
+        objects: deriveFrames(remapped),
+      };
+      const slides = [...state.deck.slides];
+      slides.splice(index + 1, 0, copy);
+      return {
+        ...state,
+        deck: { ...state.deck, slides },
+        currentSlideId: copy.id,
+        selectedIds: [],
+      };
+    }
+
     case "remove-slide": {
       if (state.deck.slides.length <= 1) {
         return state;
@@ -739,6 +780,7 @@ const UNDOABLE_ACTIONS: ReadonlySet<EditorAction["type"]> = new Set([
   "reorder-selected",
   "reorder-object",
   "add-slide",
+  "duplicate-slide",
   "remove-slide",
   "set-slide-background",
   "set-deck-title",
