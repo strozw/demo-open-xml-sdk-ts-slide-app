@@ -130,7 +130,9 @@ function parseXfrm(xfrm: XElement | null | undefined, context: string): ParsedFr
 }
 
 function parseTextContent(txBody: XElement | null | undefined): TextContent {
-  const content = createTextContent();
+  // OOXML defaults when unspecified: algn="l" (left) and anchor="t" (top) —
+  // not the editor's own new-shape defaults (center / center).
+  const content = createTextContent({ align: "left", verticalAlign: "top" });
   if (!txBody) {
     return content;
   }
