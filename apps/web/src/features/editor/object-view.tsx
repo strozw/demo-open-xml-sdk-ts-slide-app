@@ -5,7 +5,14 @@ import type { CSSProperties } from "react";
 import { ChartPreview } from "./chart-preview";
 import { fontDefinition, segmentByStyle } from "./fonts";
 import { shapeDefinition } from "./shape-defs";
-import type { GroupObject, ShapeObject, SlideObject, TextContent, TextVAlign } from "./types";
+import type {
+  ConnectorObject,
+  GroupObject,
+  ShapeObject,
+  SlideObject,
+  TextContent,
+  TextVAlign,
+} from "./types";
 
 export const VERTICAL_ALIGN_TO_FLEX: Record<TextVAlign, CSSProperties["justifyContent"]> = {
   top: "flex-start",
@@ -96,6 +103,60 @@ function ShapeSvg({ object }: { object: ShapeObject }) {
   );
 }
 
+/**
+ * Connector rendering: a straight line or an H-V-H elbow (matching
+ * bentConnector3 with its default 50% bend) between the derived endpoints,
+ * drawn in the connector's own frame (local coordinates).
+ */
+function ConnectorView({ object }: { object: ConnectorObject }) {
+  const width = Math.max(1, object.width);
+  const height = Math.max(1, object.height);
+  const sx = object.startPoint.x - object.x;
+  const sy = object.startPoint.y - object.y;
+  const ex = object.endPoint.x - object.x;
+  const ey = object.endPoint.y - object.y;
+  const midX = (sx + ex) / 2;
+  const path =
+    object.connectorType === "bent"
+      ? `M ${sx} ${sy} L ${midX} ${sy} L ${midX} ${ey} L ${ex} ${ey}`
+      : `M ${sx} ${sy} L ${ex} ${ey}`;
+  const markerId = `connector-arrow-${object.id}`;
+
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      width="100%"
+      height="100%"
+      preserveAspectRatio="none"
+      style={{ overflow: "visible" }}
+    >
+      {object.arrowEnd ? (
+        <defs>
+          <marker
+            id={markerId}
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill={object.lineColor} />
+          </marker>
+        </defs>
+      ) : null}
+      <path
+        d={path}
+        fill="none"
+        stroke={object.lineColor}
+        strokeWidth={object.lineWidth}
+        strokeLinejoin="round"
+        markerEnd={object.arrowEnd ? `url(#${markerId})` : undefined}
+      />
+    </svg>
+  );
+}
+
 export function ObjectContent({
   object,
   hideTextObjectId,
@@ -119,6 +180,8 @@ export function ObjectContent({
       return <ChartPreview chart={object} />;
     case "group":
       return <GroupContent group={object} hideTextObjectId={hideTextObjectId} />;
+    case "connector":
+      return <ConnectorView object={object} />;
     default:
       return null;
   }

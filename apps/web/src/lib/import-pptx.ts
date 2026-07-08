@@ -16,6 +16,8 @@ import {
   createTextContent,
   type CharStyle,
   type ChartObject,
+  type ConnectionSite,
+  type ConnectorObject,
   type Deck,
   type GroupObject,
   type LeafObject,
@@ -58,6 +60,26 @@ const ANCHOR_FROM_OOXML: Record<string, TextVAlign> = {
   ctr: "center",
   b: "bottom",
 };
+
+/** Connection-site index → cardinal site (matches the exporter's table). */
+const INDEX_TO_SITE: readonly ConnectionSite[] = ["top", "left", "bottom", "right"];
+
+/**
+ * Numeric `p:cNvPr@id` → restored editor object id, per slide. Connectors
+ * reference their endpoints through these numeric ids.
+ */
+type ShapeIdRegistry = Map<string, string>;
+
+function registerShapeId(
+  registry: ShapeIdRegistry,
+  cNvPr: XElement | null | undefined,
+  editorId: string,
+): void {
+  const numericId = cNvPr?.attribute("id")?.value;
+  if (numericId) {
+    registry.set(numericId, editorId);
+  }
+}
 
 function hexColor(srgbClr: XElement | null | undefined): string | undefined {
   const value = srgbClr?.attribute("val")?.value;
@@ -171,16 +193,19 @@ function parseTextContent(txBody: XElement | null | undefined): TextContent {
   return content;
 }
 
-function parseShape(sp: XElement): ShapeObject | TextObject {
+function parseShape(sp: XElement, registry: ShapeIdRegistry): ShapeObject | TextObject {
   const nv = sp.element(P.nvSpPr);
-  const name = nv?.element(P.cNvPr)?.attribute("name")?.value ?? "図形";
+  const cNvPr = nv?.element(P.cNvPr);
+  const name = cNvPr?.attribute("name")?.value ?? "図形";
   const isTextBox = nv?.element(P.cNvSpPr)?.attribute("txBox")?.value === "1";
   const spPr = sp.element(P.spPr);
   const frame = parseXfrm(spPr?.element(A.xfrm), `図形「${name}」`);
   const text = parseTextContent(sp.element(P.txBody));
+  const id = createId("object");
+  registerShapeId(registry, cNvPr, id);
 
   if (isTextBox) {
-    return { id: createId("object"), name, type: "text", ...frame, text };
+    return { id, name, type: "text", ...frame, text };
   }
 
   const prst = spPr?.element(A.prstGeom)?.attribute("prst")?.value ?? "";
@@ -190,7 +215,7 @@ function parseShape(sp: XElement): ShapeObject | TextObject {
   }
   const line = spPr?.element(A.ln);
   return {
-    id: createId("object"),
+    id,
     name,
     type: "shape",
     shape: kind,
@@ -217,7 +242,7 @@ function chartFromMeta(meta: string, frame: ParsedFrame, context: string): Chart
   return { ...parsed, ...frame };
 }
 
-function parseChartFrame(graphicFrame: XElement): ChartObject {
+function parseChartFrame(graphicFrame: XElement, registry: ShapeIdRegistry): ChartObject {
   const cNvPr = graphicFrame.element(P.nvGraphicFramePr)?.element(P.cNvPr);
   const name = cNvPr?.attribute("name")?.value ?? "グラフ";
   const frame = parseXfrm(graphicFrame.element(P.xfrm), `グラフ「${name}」`);
@@ -227,7 +252,9 @@ function parseChartFrame(graphicFrame: XElement): ChartObject {
       `${UNSUPPORTED_FILE} (グラフ「${name}」に再編集用メタデータがありません)`,
     );
   }
-  return chartFromMeta(meta, frame, `グラフ「${name}」`);
+  const chart = chartFromMeta(meta, frame, `グラフ「${name}」`);
+  registerShapeId(registry, cNvPr, chart.id);
+  return chart;
 }
 
 async function readPartBytes(part: OpenXmlPart): Promise<Uint8Array> {
@@ -242,6 +269,7 @@ async function parseChartPic(
   pic: XElement,
   relTargets: ReadonlyMap<string, string>,
   pkg: PmlPackage,
+  registry: ShapeIdRegistry,
 ): Promise<ChartObject> {
   const cNvPr = pic.element(P.nvPicPr)?.element(P.cNvPr);
   const name = cNvPr?.attribute("name")?.value ?? "グラフ画像";
@@ -263,22 +291,83 @@ async function parseChartPic(
     );
   }
   const chart = chartFromMeta(meta, frame, `画像「${name}」`);
+  registerShapeId(registry, cNvPr, chart.id);
   return { ...chart, exportAsImage: true };
+}
+
+/**
+ * `p:cxnSp` → ConnectorObject. Endpoints are restored from the semantic
+ * `a:stCxn`/`a:endCxn` references (numeric shape id + site index), the
+ * concrete geometry from the xfrm (off/ext + flips).
+ */
+function parseConnector(cxnSp: XElement, registry: ShapeIdRegistry): ConnectorObject {
+  const nv = cxnSp.element(P.nvCxnSpPr);
+  const name = nv?.element(P.cNvPr)?.attribute("name")?.value ?? "コネクタ";
+  const context = `コネクタ「${name}」`;
+
+  const readEndpoint = (elementName: typeof A.stCxn): ConnectorObject["start"] => {
+    const reference = nv?.element(P.cNvCxnSpPr)?.element(elementName);
+    const numericId = reference?.attribute("id")?.value;
+    const site = INDEX_TO_SITE[Number(reference?.attribute("idx")?.value ?? -1)];
+    const objectId = numericId ? registry.get(numericId) : undefined;
+    if (!objectId || !site) {
+      throw new PptxImportError(`${UNSUPPORTED_FILE} (${context} の接続先を解決できません)`);
+    }
+    return { objectId, site };
+  };
+
+  const spPr = cxnSp.element(P.spPr);
+  const xfrmElement = spPr?.element(A.xfrm);
+  const frame = parseXfrm(xfrmElement, context);
+  const flipH = xfrmElement?.attribute("flipH")?.value === "1";
+  const flipV = xfrmElement?.attribute("flipV")?.value === "1";
+
+  const prst = spPr?.element(A.prstGeom)?.attribute("prst")?.value;
+  const connectorType =
+    prst === "bentConnector3" ? "bent" : prst === "straightConnector1" ? "straight" : undefined;
+  if (!connectorType) {
+    throw new PptxImportError(`${UNSUPPORTED_FILE} (未対応のコネクタ: ${prst ?? "不明"})`);
+  }
+
+  const line = spPr?.element(A.ln);
+  const tailType = line?.element(A.tailEnd)?.attribute("type")?.value;
+
+  return {
+    id: createId("object"),
+    name,
+    type: "connector",
+    connectorType,
+    start: readEndpoint(A.stCxn),
+    end: readEndpoint(A.endCxn),
+    startPoint: {
+      x: flipH ? frame.x + frame.width : frame.x,
+      y: flipV ? frame.y + frame.height : frame.y,
+    },
+    endPoint: {
+      x: flipH ? frame.x : frame.x + frame.width,
+      y: flipV ? frame.y : frame.y + frame.height,
+    },
+    ...frame,
+    lineColor: (line ? solidFillColor(line) : undefined) ?? "#1f2937",
+    lineWidth: line ? Math.max(1, emuToPx(line.attribute("w")?.value)) : 1,
+    arrowEnd: tailType !== undefined && tailType !== "none",
+  };
 }
 
 async function parseLeaf(
   element: XElement,
   relTargets: ReadonlyMap<string, string>,
   pkg: PmlPackage,
+  registry: ShapeIdRegistry,
 ): Promise<LeafObject> {
   if (element.name === P.sp) {
-    return parseShape(element);
+    return parseShape(element, registry);
   }
   if (element.name === P.graphicFrame) {
-    return parseChartFrame(element);
+    return parseChartFrame(element, registry);
   }
   if (element.name === P.pic) {
-    return parseChartPic(element, relTargets, pkg);
+    return parseChartPic(element, relTargets, pkg, registry);
   }
   throw new PptxImportError(`${UNSUPPORTED_FILE} (未対応の要素: ${element.name.localName})`);
 }
@@ -287,8 +376,10 @@ async function parseGroup(
   grpSp: XElement,
   relTargets: ReadonlyMap<string, string>,
   pkg: PmlPackage,
+  registry: ShapeIdRegistry,
 ): Promise<GroupObject> {
-  const name = grpSp.element(P.nvGrpSpPr)?.element(P.cNvPr)?.attribute("name")?.value ?? "グループ";
+  const cNvPr = grpSp.element(P.nvGrpSpPr)?.element(P.cNvPr);
+  const name = cNvPr?.attribute("name")?.value ?? "グループ";
   const frame = parseXfrm(grpSp.element(P.grpSpPr)?.element(A.xfrm), `グループ「${name}」`);
   const children: SlideObject[] = [];
   for (const child of grpSp.elements()) {
@@ -298,12 +389,14 @@ async function parseGroup(
     // Child coordinates are absolute (the exporter writes chOff == off at
     // every level), so nested groups parse with the same recursion.
     if (child.name === P.grpSp) {
-      children.push(await parseGroup(child, relTargets, pkg));
+      children.push(await parseGroup(child, relTargets, pkg, registry));
     } else {
-      children.push(await parseLeaf(child, relTargets, pkg));
+      children.push(await parseLeaf(child, relTargets, pkg, registry));
     }
   }
-  return { id: createId("object"), name, type: "group", ...frame, children };
+  const id = createId("object");
+  registerShapeId(registry, cNvPr, id);
+  return { id, name, type: "group", ...frame, children };
 }
 
 async function parseSlide(
@@ -315,17 +408,26 @@ async function parseSlide(
   const cSld = root.element(P.cSld);
   const background = solidFillColor(cSld?.element(P.bg)?.element(P.bgPr)) ?? "#ffffff";
 
-  const objects: SlideObject[] = [];
+  // Two-phase parse: connectors reference other shapes by numeric id, and
+  // may precede their endpoints in z-order, so they resolve after every
+  // other object has been parsed (order is preserved).
+  const registry: ShapeIdRegistry = new Map();
+  const ordered: (SlideObject | { pendingConnector: XElement })[] = [];
   for (const child of cSld?.element(P.spTree)?.elements() ?? []) {
     if (child.name === P.nvGrpSpPr || child.name === P.grpSpPr) {
       continue;
     }
-    if (child.name === P.grpSp) {
-      objects.push(await parseGroup(child, relTargets, pkg));
+    if (child.name === P.cxnSp) {
+      ordered.push({ pendingConnector: child });
+    } else if (child.name === P.grpSp) {
+      ordered.push(await parseGroup(child, relTargets, pkg, registry));
     } else {
-      objects.push(await parseLeaf(child, relTargets, pkg));
+      ordered.push(await parseLeaf(child, relTargets, pkg, registry));
     }
   }
+  const objects: SlideObject[] = ordered.map((entry) =>
+    "pendingConnector" in entry ? parseConnector(entry.pendingConnector, registry) : entry,
+  );
   return { id: createId("slide"), background, objects };
 }
 

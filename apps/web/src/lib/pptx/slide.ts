@@ -5,7 +5,15 @@
 import { A, C, P, R, XDeclaration, XDocument, XElement } from "openxmlsdkts";
 
 import { chartMetaExtLst } from "./chart-meta";
-import type { ChartDoc, GroupDoc, ShapeDoc, SlideChildDoc, SlideDoc, TextBodyDoc } from "./types";
+import type {
+  ChartDoc,
+  ConnectorDoc,
+  GroupDoc,
+  ShapeDoc,
+  SlideChildDoc,
+  SlideDoc,
+  TextBodyDoc,
+} from "./types";
 import { attr, offExt, solidFill, xfrm, xmlnsDecl } from "./xml";
 
 const CHART_GRAPHIC_URI = "http://schemas.openxmlformats.org/drawingml/2006/chart";
@@ -13,15 +21,32 @@ const CHART_GRAPHIC_URI = "http://schemas.openxmlformats.org/drawingml/2006/char
 /** Relationship id (on the slide part) per chart, in encounter order. */
 export type ChartRelIds = ReadonlyMap<ChartDoc, string>;
 
-/** Doles out unique shape ids within one slide; id 1 is the root group. */
-class ShapeIdAllocator {
-  private nextId = 2;
+/**
+ * Numeric shape ids (`p:cNvPr@id`, unique per slide, 1 is the root group)
+ * are assigned up-front in document order so connectors can reference their
+ * endpoints via `a:stCxn`/`a:endCxn` regardless of z-order.
+ */
+interface ShapeIds {
+  byNode: Map<SlideChildDoc, number>;
+  byRefId: Map<string, number>;
+}
 
-  next(): number {
-    const id = this.nextId;
-    this.nextId += 1;
-    return id;
-  }
+function assignShapeIds(children: readonly SlideChildDoc[]): ShapeIds {
+  const byNode = new Map<SlideChildDoc, number>();
+  const byRefId = new Map<string, number>();
+  let next = 2;
+  const visit = (child: SlideChildDoc): void => {
+    byNode.set(child, next);
+    if (child.refId) {
+      byRefId.set(child.refId, next);
+    }
+    next += 1;
+    if (child.type === "group") {
+      child.children.forEach(visit);
+    }
+  };
+  children.forEach(visit);
+  return { byNode, byRefId };
 }
 
 function nonVisualProps(
@@ -87,13 +112,13 @@ function textBodyElement(body: TextBodyDoc | undefined): XElement {
   );
 }
 
-function shapeElement(shape: ShapeDoc, ids: ShapeIdAllocator): XElement {
+function shapeElement(shape: ShapeDoc, id: number): XElement {
   return new XElement(
     P.sp,
     nonVisualProps(
       P.nvSpPr,
       new XElement(P.cNvSpPr, shape.textBox ? attr("txBox", 1) : null),
-      ids.next(),
+      id,
       shape.name,
     ),
     new XElement(
@@ -109,13 +134,13 @@ function shapeElement(shape: ShapeDoc, ids: ShapeIdAllocator): XElement {
   );
 }
 
-function chartFrameElement(chart: ChartDoc, relId: string, ids: ShapeIdAllocator): XElement {
+function chartFrameElement(chart: ChartDoc, relId: string, id: number): XElement {
   return new XElement(
     P.graphicFrame,
     nonVisualProps(
       P.nvGraphicFramePr,
       new XElement(P.cNvGraphicFramePr),
-      ids.next(),
+      id,
       chart.name,
       chart.reEditData ? chartMetaExtLst(chart.reEditData) : null,
     ),
@@ -135,13 +160,13 @@ function chartFrameElement(chart: ChartDoc, relId: string, ids: ShapeIdAllocator
  * Chart rasterized as a picture: `p:pic` with the PNG media part referenced
  * from `a:blip@r:embed`, carrying the re-edit metadata on its `p:cNvPr`.
  */
-function picElement(chart: ChartDoc, relId: string, ids: ShapeIdAllocator): XElement {
+function picElement(chart: ChartDoc, relId: string, id: number): XElement {
   return new XElement(
     P.pic,
     nonVisualProps(
       P.nvPicPr,
       new XElement(P.cNvPicPr, new XElement(A.picLocks, attr("noChangeAspect", 1))),
-      ids.next(),
+      id,
       chart.name,
       chart.reEditData ? chartMetaExtLst(chart.reEditData) : null,
     ),
@@ -158,35 +183,90 @@ function picElement(chart: ChartDoc, relId: string, ids: ShapeIdAllocator): XEle
   );
 }
 
-function groupElement(group: GroupDoc, chartRelIds: ChartRelIds, ids: ShapeIdAllocator): XElement {
+/**
+ * Connection shape: `p:cxnSp` with semantic `a:stCxn`/`a:endCxn` links to
+ * the endpoint shapes (resolved to their numeric ids), plus the concrete
+ * geometry (endpoint bounding box + flips) PowerPoint renders until the
+ * user moves a connected shape.
+ */
+function connectorElement(connector: ConnectorDoc, id: number, shapeIds: ShapeIds): XElement {
+  const connectionRef = (
+    name: typeof A.stCxn,
+    reference: { refId: string; siteIndex: number } | undefined,
+  ): XElement | null => {
+    const targetId = reference ? shapeIds.byRefId.get(reference.refId) : undefined;
+    return reference && targetId !== undefined
+      ? new XElement(name, attr("id", targetId), attr("idx", reference.siteIndex))
+      : null;
+  };
+  return new XElement(
+    P.cxnSp,
+    new XElement(
+      P.nvCxnSpPr,
+      new XElement(P.cNvPr, attr("id", id), attr("name", connector.name)),
+      new XElement(
+        P.cNvCxnSpPr,
+        connectionRef(A.stCxn, connector.start),
+        connectionRef(A.endCxn, connector.end),
+      ),
+      new XElement(P.nvPr),
+    ),
+    new XElement(
+      P.spPr,
+      new XElement(
+        A.xfrm,
+        connector.flipH ? attr("flipH", 1) : null,
+        connector.flipV ? attr("flipV", 1) : null,
+        offExt(connector.frame),
+      ),
+      new XElement(A.prstGeom, attr("prst", connector.preset), new XElement(A.avLst)),
+      new XElement(
+        A.ln,
+        attr("w", connector.lineWidthEmu),
+        solidFill(connector.lineColor),
+        connector.arrowEnd ? new XElement(A.tailEnd, attr("type", "triangle")) : null,
+      ),
+    ),
+  );
+}
+
+function groupElement(group: GroupDoc, chartRelIds: ChartRelIds, shapeIds: ShapeIds): XElement {
   return new XElement(
     P.grpSp,
-    nonVisualProps(P.nvGrpSpPr, new XElement(P.cNvGrpSpPr), ids.next(), group.name),
+    nonVisualProps(
+      P.nvGrpSpPr,
+      new XElement(P.cNvGrpSpPr),
+      shapeIds.byNode.get(group)!,
+      group.name,
+    ),
     // chOff/chExt == off/ext: children keep absolute slide coordinates.
     new XElement(P.grpSpPr, xfrm(group.frame, group.frame)),
-    group.children.map((child) => childElement(child, chartRelIds, ids)),
+    group.children.map((child) => childElement(child, chartRelIds, shapeIds)),
   );
 }
 
 function childElement(
   child: SlideChildDoc,
   chartRelIds: ChartRelIds,
-  ids: ShapeIdAllocator,
+  shapeIds: ShapeIds,
 ): XElement {
+  const id = shapeIds.byNode.get(child)!;
   switch (child.type) {
     case "shape":
-      return shapeElement(child, ids);
+      return shapeElement(child, id);
     case "chart":
       return child.image
-        ? picElement(child, chartRelIds.get(child)!, ids)
-        : chartFrameElement(child, chartRelIds.get(child)!, ids);
+        ? picElement(child, chartRelIds.get(child)!, id)
+        : chartFrameElement(child, chartRelIds.get(child)!, id);
     case "group":
-      return groupElement(child, chartRelIds, ids);
+      return groupElement(child, chartRelIds, shapeIds);
+    case "connector":
+      return connectorElement(child, id, shapeIds);
   }
 }
 
 export function buildSlide(slide: SlideDoc, chartRelIds: ChartRelIds): XDocument {
-  const ids = new ShapeIdAllocator();
+  const shapeIds = assignShapeIds(slide.children);
   return new XDocument(
     new XDeclaration("1.0", "UTF-8", "yes"),
     new XElement(
@@ -212,7 +292,7 @@ export function buildSlide(slide: SlideDoc, chartRelIds: ChartRelIds): XDocument
             new XElement(P.nvPr),
           ),
           new XElement(P.grpSpPr),
-          slide.children.map((child) => childElement(child, chartRelIds, ids)),
+          slide.children.map((child) => childElement(child, chartRelIds, shapeIds)),
         ),
       ),
       new XElement(P.clrMapOvr, new XElement(A.masterClrMapping)),

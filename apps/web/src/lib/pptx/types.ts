@@ -49,6 +49,8 @@ export interface TextBodyDoc {
 
 export interface ShapeDoc {
   type: "shape";
+  /** Caller-side id (the editor object id); connectors reference it. */
+  refId?: string;
   name: string;
   frame: FrameEmu;
   /** DrawingML preset geometry (`a:prstGeom@prst`), e.g. "roundRect". */
@@ -85,6 +87,8 @@ export interface ChartSeriesDoc {
 
 export interface ChartDoc {
   type: "chart";
+  /** Caller-side id (the editor object id); connectors reference it. */
+  refId?: string;
   name: string;
   frame: FrameEmu;
   chartType: ChartType;
@@ -116,12 +120,38 @@ export interface ChartDoc {
  */
 export interface GroupDoc {
   type: "group";
+  /** Caller-side id (the editor object id); connectors reference it. */
+  refId?: string;
   name: string;
   frame: FrameEmu;
   children: SlideChildDoc[];
 }
 
-export type SlideChildDoc = ShapeDoc | ChartDoc | GroupDoc;
+/**
+ * Connection shape (`p:cxnSp`). `start` / `end` reference other docs by
+ * their `refId`; the generator resolves them to the numeric shape ids it
+ * assigns and writes `a:stCxn` / `a:endCxn`, so PowerPoint treats the line
+ * as a real connector that re-routes when shapes move.
+ */
+export interface ConnectorDoc {
+  type: "connector";
+  refId?: string;
+  name: string;
+  /** Bounding box of the two endpoints. */
+  frame: FrameEmu;
+  preset: "straightConnector1" | "bentConnector3";
+  flipH: boolean;
+  flipV: boolean;
+  start?: { refId: string; siteIndex: number };
+  end?: { refId: string; siteIndex: number };
+  /** RRGGBB (no `#`). */
+  lineColor: string;
+  lineWidthEmu: number;
+  /** `a:tailEnd type="triangle"` arrowhead at the end point. */
+  arrowEnd: boolean;
+}
+
+export type SlideChildDoc = ShapeDoc | ChartDoc | GroupDoc | ConnectorDoc;
 
 export interface SlideDoc {
   /** RRGGBB background fill. */

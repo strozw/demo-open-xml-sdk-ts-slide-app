@@ -9,8 +9,16 @@ import {
   objectBounds,
   pointInRect,
   rectsIntersect,
+  sitePoint,
 } from "./geometry";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+} from "@workspace/ui/components/context-menu";
+
 import { fontDefinition, remapCharStyles, segmentByStyle } from "./fonts";
+import { ObjectContextMenuItems } from "./object-context-menu";
 import { ObjectContent, VERTICAL_ALIGN_TO_FLEX } from "./object-view";
 import {
   findObjectDeep,
@@ -22,11 +30,30 @@ import {
 import {
   SLIDE_HEIGHT,
   SLIDE_WIDTH,
+  type ConnectionSite,
+  type ConnectorObject,
   type Rect,
   type ShapeObject,
   type SlideObject,
   type TextObject,
 } from "./types";
+
+const CONNECTION_SITES: readonly ConnectionSite[] = ["top", "right", "bottom", "left"];
+
+/** Re-attach target while dragging a connector endpoint. */
+interface ConnectorDropCandidate {
+  objectId: string;
+  site: ConnectionSite;
+  point: Point;
+  bounds: Rect;
+}
+
+interface ConnectorDrag {
+  connectorId: string;
+  endpoint: "start" | "end";
+  point: Point;
+  candidate: ConnectorDropCandidate | null;
+}
 
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
@@ -68,7 +95,8 @@ type PointerSession =
   | { mode: "idle" }
   | { mode: "marquee"; start: Point }
   | { mode: "move"; last: Point }
-  | { mode: "resize"; objectId: string; handle: ResizeHandle; startFrame: Rect; start: Point };
+  | { mode: "resize"; objectId: string; handle: ResizeHandle; startFrame: Rect; start: Point }
+  | { mode: "connector-endpoint" };
 
 function resizeFrame(startFrame: Rect, handle: ResizeHandle, dx: number, dy: number): Rect {
   let { x, y, width, height } = startFrame;
@@ -101,6 +129,7 @@ export function SlideCanvas() {
   const sessionRef = React.useRef<PointerSession>({ mode: "idle" });
   const [scale, setScale] = React.useState(0.6);
   const [marquee, setMarquee] = React.useState<{ start: Point; current: Point } | null>(null);
+  const [connectorDrag, setConnectorDrag] = React.useState<ConnectorDrag | null>(null);
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -220,6 +249,48 @@ export function SlideCanvas() {
     }
   };
 
+  /** Deepest connectable object under the point + its nearest site. */
+  const findDropCandidate = (point: Point): ConnectorDropCandidate | null => {
+    const topLevel = slide.objects.findLast(
+      (candidate) => candidate.type !== "connector" && pointInRect(point, objectBounds(candidate)),
+    );
+    if (!topLevel) {
+      return null;
+    }
+    const chain = topLevel.type === "group" ? hitChain(topLevel, point) : [topLevel];
+    const target = chain.at(-1)!;
+    const bounds = objectBounds(target);
+    let best: { site: ConnectionSite; point: Point; distance: number } | null = null;
+    for (const site of CONNECTION_SITES) {
+      const candidatePoint = sitePoint(bounds, site);
+      const distance = (candidatePoint.x - point.x) ** 2 + (candidatePoint.y - point.y) ** 2;
+      if (!best || distance < best.distance) {
+        best = { site, point: candidatePoint, distance };
+      }
+    }
+    return { objectId: target.id, site: best!.site, point: best!.point, bounds };
+  };
+
+  const handleConnectorEndpointDown = (
+    event: React.PointerEvent<HTMLDivElement>,
+    connector: ConnectorObject,
+    endpoint: "start" | "end",
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.stopPropagation();
+    canvasRef.current?.setPointerCapture(event.pointerId);
+    sessionRef.current = { mode: "connector-endpoint" };
+    const point = toSlidePoint(event);
+    setConnectorDrag({
+      connectorId: connector.id,
+      endpoint,
+      point,
+      candidate: findDropCandidate(point),
+    });
+  };
+
   const handleResizePointerDown = (
     event: React.PointerEvent<HTMLDivElement>,
     objectId: string,
@@ -263,11 +334,37 @@ export function SlideCanvas() {
         point.y - session.start.y,
       );
       dispatch({ type: "resize-object", id: session.objectId, frame });
+    } else if (session.mode === "connector-endpoint") {
+      setConnectorDrag((previous) =>
+        previous ? { ...previous, point, candidate: findDropCandidate(point) } : previous,
+      );
     }
   };
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
     const session = sessionRef.current;
+    if (session.mode === "connector-endpoint") {
+      if (connectorDrag?.candidate) {
+        const connector = slide.objects.find(
+          (candidate) => candidate.id === connectorDrag.connectorId,
+        );
+        if (connector?.type === "connector") {
+          dispatch({
+            type: "update-object",
+            id: connector.id,
+            patch: {
+              [connectorDrag.endpoint]: {
+                objectId: connectorDrag.candidate.objectId,
+                site: connectorDrag.candidate.site,
+              },
+            },
+          });
+        }
+      }
+      setConnectorDrag(null);
+      sessionRef.current = { mode: "idle" };
+      return;
+    }
     if (session.mode === "marquee") {
       const rect = normalizeRect(session.start, toSlidePoint(event));
       if (rect.width < 3 && rect.height < 3) {
@@ -317,6 +414,13 @@ export function SlideCanvas() {
   const singleSelected = selectedObjects.length === 1 ? selectedObjects[0] : undefined;
   const topLevelIds = new Set(slide.objects.map((object) => object.id));
   const nestedSelected = selectedObjects.filter((object) => !topLevelIds.has(object.id));
+
+  // Connector whose endpoint is currently being dragged (for the preview).
+  const draggedConnector =
+    connectorDrag &&
+    (slide.objects.find(
+      (candidate) => candidate.id === connectorDrag.connectorId && candidate.type === "connector",
+    ) as ConnectorObject | undefined);
 
   // The object whose text is being edited in place (shape or text box).
   const editingObject = state.textEditing
@@ -389,23 +493,36 @@ export function SlideCanvas() {
           {slide.objects.map((object) => {
             const selected = selectedSet.has(object.id) || marqueeHits.has(object.id);
             return (
-              <div
-                key={object.id}
-                data-object-id={object.id}
-                className="absolute"
-                style={{
-                  left: object.x,
-                  top: object.y,
-                  width: object.width,
-                  height: object.height,
-                  cursor: "move",
-                  outline: selected ? "2px solid #2563eb" : undefined,
-                  outlineOffset: 1,
-                }}
-                onPointerDown={(event) => handleObjectPointerDown(event, object)}
-              >
-                <ObjectContent object={object} hideTextObjectId={editingObject?.id} />
-              </div>
+              <ContextMenu key={object.id}>
+                <ContextMenuTrigger asChild>
+                  <div
+                    data-object-id={object.id}
+                    className="absolute"
+                    style={{
+                      left: object.x,
+                      top: object.y,
+                      width: object.width,
+                      height: object.height,
+                      cursor: "move",
+                      outline: selected ? "2px solid #2563eb" : undefined,
+                      outlineOffset: 1,
+                    }}
+                    onPointerDown={(event) => handleObjectPointerDown(event, object)}
+                    onContextMenu={() => {
+                      // Menu actions operate on the selection: right-clicking
+                      // an unselected object selects it first.
+                      if (!state.selectedIds.includes(object.id)) {
+                        dispatch({ type: "set-selection", ids: [object.id] });
+                      }
+                    }}
+                  >
+                    <ObjectContent object={object} hideTextObjectId={editingObject?.id} />
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ObjectContextMenuItems object={object} includeOrdering />
+                </ContextMenuContent>
+              </ContextMenu>
             );
           })}
 
@@ -510,7 +627,7 @@ export function SlideCanvas() {
             />
           ))}
 
-          {singleSelected
+          {singleSelected && singleSelected.type !== "connector"
             ? RESIZE_HANDLES.map(({ handle, left, top }) => (
                 <div
                   key={handle}
@@ -534,6 +651,78 @@ export function SlideCanvas() {
                 />
               ))
             : null}
+
+          {singleSelected?.type === "connector"
+            ? (["start", "end"] as const).map((endpoint) => {
+                const point =
+                  endpoint === "start" ? singleSelected.startPoint : singleSelected.endPoint;
+                return (
+                  <div
+                    key={endpoint}
+                    data-testid={`connector-endpoint-${endpoint}`}
+                    title="ドラッグで接続先を変更"
+                    className="absolute z-10 rounded-full border-2 border-blue-600 bg-white"
+                    style={{
+                      left: point.x - 6,
+                      top: point.y - 6,
+                      width: 12,
+                      height: 12,
+                      cursor: "grab",
+                    }}
+                    onPointerDown={(event) =>
+                      handleConnectorEndpointDown(event, singleSelected, endpoint)
+                    }
+                  />
+                );
+              })
+            : null}
+
+          {connectorDrag && draggedConnector ? (
+            <svg
+              className="pointer-events-none absolute left-0 top-0 z-20"
+              width={SLIDE_WIDTH}
+              height={SLIDE_HEIGHT}
+              viewBox={`0 0 ${SLIDE_WIDTH} ${SLIDE_HEIGHT}`}
+              style={{ overflow: "visible" }}
+              data-testid="connector-drag-preview"
+            >
+              <line
+                x1={
+                  connectorDrag.endpoint === "start"
+                    ? draggedConnector.endPoint.x
+                    : draggedConnector.startPoint.x
+                }
+                y1={
+                  connectorDrag.endpoint === "start"
+                    ? draggedConnector.endPoint.y
+                    : draggedConnector.startPoint.y
+                }
+                x2={(connectorDrag.candidate?.point ?? connectorDrag.point).x}
+                y2={(connectorDrag.candidate?.point ?? connectorDrag.point).y}
+                stroke="#2563eb"
+                strokeWidth={1.5}
+                strokeDasharray="6 4"
+              />
+              {connectorDrag.candidate
+                ? CONNECTION_SITES.map((site) => {
+                    const candidate = connectorDrag.candidate!;
+                    const point = sitePoint(candidate.bounds, site);
+                    const active = site === candidate.site;
+                    return (
+                      <circle
+                        key={site}
+                        cx={point.x}
+                        cy={point.y}
+                        r={active ? 6 : 4}
+                        fill={active ? "#2563eb" : "#ffffff"}
+                        stroke="#2563eb"
+                        strokeWidth={1.5}
+                      />
+                    );
+                  })
+                : null}
+            </svg>
+          ) : null}
 
           {marqueeRect ? (
             <div

@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   SendToBack,
   Shapes,
+  Spline,
   Trash2,
   Type,
   Ungroup,
@@ -239,6 +240,8 @@ export function EditorToolbar() {
 
   const canGroup = selection.length >= 2;
   const canUngroup = selection.some((object) => object.type === "group");
+  const canConnect =
+    selection.length === 2 && selection.every((object) => object.type !== "connector");
 
   const handleImportFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -344,6 +347,14 @@ export function EditorToolbar() {
         disabled={!canUngroup}
       >
         <Ungroup />
+      </IconAction>
+      <IconAction
+        label="コネクタで接続"
+        testId="connect-button"
+        onClick={() => dispatch({ type: "connect-selected" })}
+        disabled={!canConnect}
+      >
+        <Spline />
       </IconAction>
       <IconAction
         label="複製"

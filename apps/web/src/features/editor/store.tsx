@@ -2,11 +2,19 @@
 
 import * as React from "react";
 
-import { boundingBox, fitObjectToFrame, objectBounds, translateObject } from "./geometry";
+import {
+  boundingBox,
+  facingSites,
+  fitObjectToFrame,
+  objectBounds,
+  sitePoint,
+  translateObject,
+} from "./geometry";
 import {
   createDeck,
   createId,
   createSlide,
+  type ConnectorObject,
   type Deck,
   type GroupObject,
   type Rect,
@@ -50,7 +58,8 @@ export type EditorAction =
   | { type: "start-text-edit"; id: string }
   | { type: "end-text-edit" }
   | { type: "set-text-selection"; start: number; end: number }
-  | { type: "rename-object"; id: string; name: string };
+  | { type: "rename-object"; id: string; name: string }
+  | { type: "connect-selected" };
 
 function currentSlide(state: EditorState): Slide {
   const slide = state.deck.slides.find((s) => s.id === state.currentSlideId);
@@ -71,8 +80,40 @@ function withDerivedFrames(object: SlideObject): SlideObject {
   return { ...object, ...boundingBox(children.map(objectBounds)), children };
 }
 
+/**
+ * Connector geometry follows its endpoints: recompute the site points from
+ * the connected objects' current bounds and the frame from those points.
+ * Connectors whose endpoints no longer exist are dropped.
+ */
+function syncConnectors(objects: SlideObject[]): SlideObject[] {
+  return objects.flatMap((object): SlideObject[] => {
+    if (object.type !== "connector") {
+      return [object];
+    }
+    const start = findObjectDeep(objects, object.start.objectId);
+    const end = findObjectDeep(objects, object.end.objectId);
+    if (!start || !end || start.type === "connector" || end.type === "connector") {
+      return [];
+    }
+    const startPoint = sitePoint(objectBounds(start), object.start.site);
+    const endPoint = sitePoint(objectBounds(end), object.end.site);
+    return [
+      {
+        ...object,
+        startPoint,
+        endPoint,
+        x: Math.min(startPoint.x, endPoint.x),
+        y: Math.min(startPoint.y, endPoint.y),
+        width: Math.abs(endPoint.x - startPoint.x),
+        height: Math.abs(endPoint.y - startPoint.y),
+      },
+    ];
+  });
+}
+
+/** Full geometry normalization: group frames, then connector routing. */
 function deriveFrames(objects: SlideObject[]): SlideObject[] {
-  return objects.map(withDerivedFrames);
+  return syncConnectors(objects.map(withDerivedFrames));
 }
 
 /** Applies `transform` to the object with the given id, wherever it nests. */
@@ -130,11 +171,17 @@ function deleteSelectedDeep(objects: SlideObject[], selected: ReadonlySet<string
   return result;
 }
 
-function regenerateIds<T extends SlideObject>(object: T): T {
+function regenerateIds<T extends SlideObject>(object: T, idMap: Map<string, string>): T {
+  const id = createId("object");
+  idMap.set(object.id, id);
   if (object.type === "group") {
-    return { ...object, id: createId("object"), children: object.children.map(regenerateIds) };
+    return {
+      ...object,
+      id,
+      children: object.children.map((child) => regenerateIds(child, idMap)),
+    };
   }
-  return { ...object, id: createId("object") };
+  return { ...object, id };
 }
 
 // ---- Name uniqueness -------------------------------------------------------
@@ -204,6 +251,7 @@ function duplicateSelectedDeep(
   selected: ReadonlySet<string>,
   copiedIds: string[],
   takenNames: Set<string>,
+  idMap: Map<string, string>,
 ): SlideObject[] {
   const result: SlideObject[] = [];
   for (const object of objects) {
@@ -211,13 +259,19 @@ function duplicateSelectedDeep(
       object.type === "group"
         ? {
             ...object,
-            children: duplicateSelectedDeep(object.children, selected, copiedIds, takenNames),
+            children: duplicateSelectedDeep(
+              object.children,
+              selected,
+              copiedIds,
+              takenNames,
+              idMap,
+            ),
           }
         : object;
     result.push(visited);
     if (selected.has(object.id)) {
       const copy = renameCopiedDeep(
-        regenerateIds(translateObject(visited, 24, 24)),
+        regenerateIds(translateObject(visited, 24, 24), idMap),
         takenNames,
       ) as SlideObject;
       copiedIds.push(copy.id);
@@ -373,12 +427,35 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
     case "duplicate-selected": {
       const selected = new Set(state.selectedIds);
       const copiedIds: string[] = [];
-      const next = patchSlide(state, (slide) => ({
-        ...slide,
-        objects: deriveFrames(
-          duplicateSelectedDeep(slide.objects, selected, copiedIds, slideNames(slide)),
-        ),
-      }));
+      const idMap = new Map<string, string>();
+      const next = patchSlide(state, (slide) => {
+        const duplicated = duplicateSelectedDeep(
+          slide.objects,
+          selected,
+          copiedIds,
+          slideNames(slide),
+          idMap,
+        );
+        const copiedSet = new Set(copiedIds);
+        // Copied connectors re-point to the copied endpoints when those were
+        // duplicated in the same operation (else they stay on the originals).
+        const remapped = duplicated.map((object) =>
+          object.type === "connector" && copiedSet.has(object.id)
+            ? {
+                ...object,
+                start: {
+                  ...object.start,
+                  objectId: idMap.get(object.start.objectId) ?? object.start.objectId,
+                },
+                end: {
+                  ...object.end,
+                  objectId: idMap.get(object.end.objectId) ?? object.end.objectId,
+                },
+              }
+            : object,
+        );
+        return { ...slide, objects: deriveFrames(remapped) };
+      });
       if (copiedIds.length === 0) {
         return state;
       }
@@ -388,7 +465,10 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
     case "group-selected": {
       const slide = currentSlide(state);
       const selected = new Set(state.selectedIds);
-      const members = slide.objects.filter((object) => selected.has(object.id));
+      // Connectors stay top-level: they are never pulled into a group.
+      const members = slide.objects.filter(
+        (object) => selected.has(object.id) && object.type !== "connector",
+      );
       if (members.length < 2) {
         return state;
       }
@@ -403,29 +483,46 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
         ...frame,
         children: members,
       };
-      const remaining = slide.objects.filter((object) => !selected.has(object.id));
-      const next = patchSlide(state, (s) => ({ ...s, objects: [...remaining, group] }));
+      const memberIds = new Set(members.map((member) => member.id));
+      const remaining = slide.objects.filter((object) => !memberIds.has(object.id));
+      const next = patchSlide(state, (s) => ({
+        ...s,
+        objects: deriveFrames([...remaining, group]),
+      }));
       return { ...next, selectedIds: [group.id] };
     }
 
     case "ungroup-selected": {
       const slide = currentSlide(state);
       const selected = new Set(state.selectedIds);
-      const nextObjects: SlideObject[] = [];
-      const releasedIds: string[] = [];
-      for (const object of slide.objects) {
-        if (object.type === "group" && selected.has(object.id)) {
-          nextObjects.push(...object.children);
-          releasedIds.push(...object.children.map((child) => child.id));
-        } else {
-          nextObjects.push(object);
+      const releasedIds = new Set<string>();
+      // Selected groups at any depth dissolve in place: their children are
+      // promoted into the parent's list at the group's position.
+      const ungroupIn = (objects: SlideObject[]): SlideObject[] => {
+        const result: SlideObject[] = [];
+        for (const object of objects) {
+          if (object.type !== "group") {
+            result.push(object);
+            continue;
+          }
+          const children = ungroupIn(object.children);
+          if (selected.has(object.id)) {
+            for (const child of children) {
+              releasedIds.add(child.id);
+            }
+            result.push(...children);
+          } else {
+            result.push({ ...object, children });
+          }
         }
-      }
-      if (releasedIds.length === 0) {
+        return result;
+      };
+      const nextObjects = ungroupIn(slide.objects);
+      if (releasedIds.size === 0) {
         return state;
       }
-      const next = patchSlide(state, (s) => ({ ...s, objects: nextObjects }));
-      return { ...next, selectedIds: releasedIds };
+      const next = patchSlide(state, (s) => ({ ...s, objects: deriveFrames(nextObjects) }));
+      return { ...next, selectedIds: [...releasedIds] };
     }
 
     case "reorder-object": {
@@ -519,6 +616,44 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
             },
           }
         : state;
+
+    case "connect-selected": {
+      const slide = currentSlide(state);
+      // Exactly two non-connector objects, in selection order.
+      const endpoints = state.selectedIds
+        .map((id) => findObjectDeep(slide.objects, id))
+        .filter(
+          (object): object is SlideObject => object !== undefined && object.type !== "connector",
+        );
+      if (endpoints.length !== 2) {
+        return state;
+      }
+      const [from, to] = endpoints as [SlideObject, SlideObject];
+      const [startSite, endSite] = facingSites(objectBounds(from), objectBounds(to));
+      const connector: ConnectorObject = {
+        id: createId("object"),
+        name: uniqueName("コネクタ", slideNames(slide)),
+        type: "connector",
+        connectorType: "straight",
+        start: { objectId: from.id, site: startSite },
+        end: { objectId: to.id, site: endSite },
+        // Placeholder geometry — deriveFrames recomputes it immediately.
+        startPoint: { x: 0, y: 0 },
+        endPoint: { x: 0, y: 0 },
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        lineColor: "#1f2937",
+        lineWidth: 2,
+        arrowEnd: true,
+      };
+      const next = patchSlide(state, (s) => ({
+        ...s,
+        objects: deriveFrames([...s.objects, connector]),
+      }));
+      return { ...next, selectedIds: [connector.id] };
+    }
 
     case "rename-object": {
       const desired = action.name.trim();

@@ -37,12 +37,21 @@ import {
   type ResolvedCharStyle,
 } from "./fonts";
 import { chartLabel, CHART_DEFINITIONS } from "./shape-defs";
-import { useCurrentSlide, useEditorDispatch, useEditorState, useSelectedObjects } from "./store";
+import {
+  findObjectDeep,
+  useCurrentSlide,
+  useEditorDispatch,
+  useEditorState,
+  useSelectedObjects,
+} from "./store";
 import { createId } from "./types";
 import type {
   CharStyle,
   ChartKind,
   ChartObject,
+  ConnectionSite,
+  ConnectorKind,
+  ConnectorObject,
   ShapeObject,
   SlideObject,
   TextContent,
@@ -729,6 +738,115 @@ function ChartFields({ object }: { object: ChartObject }) {
   );
 }
 
+const CONNECTOR_KIND_ITEMS: { value: ConnectorKind; label: string }[] = [
+  { value: "straight", label: "直線" },
+  { value: "bent", label: "カギ線" },
+];
+
+const SITE_ITEMS: { value: ConnectionSite; label: string }[] = [
+  { value: "top", label: "上" },
+  { value: "right", label: "右" },
+  { value: "bottom", label: "下" },
+  { value: "left", label: "左" },
+];
+
+function ConnectorEndpointField({
+  label,
+  connector,
+  endpoint,
+}: {
+  label: string;
+  connector: ConnectorObject;
+  endpoint: "start" | "end";
+}) {
+  const slide = useCurrentSlide();
+  const dispatch = useEditorDispatch();
+  const reference = connector[endpoint];
+  const target = findObjectDeep(slide.objects, reference.objectId);
+  return (
+    <Field label={`${label}: ${target?.name ?? "(不明)"}`}>
+      <Select
+        value={reference.site}
+        onValueChange={(site) =>
+          dispatch({
+            type: "update-object",
+            id: connector.id,
+            patch: { [endpoint]: { ...reference, site: site as ConnectionSite } },
+          })
+        }
+      >
+        <SelectTrigger className="h-8 w-full" data-testid={`connector-${endpoint}-site`}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {SITE_ITEMS.map((item) => (
+            <SelectItem key={item.value} value={item.value}>
+              {item.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function ConnectorFields({ object }: { object: ConnectorObject }) {
+  const dispatch = useEditorDispatch();
+  const patch = (patchValue: Partial<ConnectorObject>) =>
+    dispatch({ type: "update-object", id: object.id, patch: patchValue });
+
+  return (
+    <div className="space-y-3">
+      <Field label="種類">
+        <Select
+          value={object.connectorType}
+          onValueChange={(value) => patch({ connectorType: value as ConnectorKind })}
+        >
+          <SelectTrigger className="h-8 w-full" data-testid="connector-kind">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONNECTOR_KIND_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <ConnectorEndpointField label="始点" connector={object} endpoint="start" />
+        <ConnectorEndpointField label="終点" connector={object} endpoint="end" />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="線の太さ (px)">
+          <NumberInput
+            value={object.lineWidth}
+            min={1}
+            onChange={(lineWidth) => patch({ lineWidth: Math.max(1, lineWidth) })}
+          />
+        </Field>
+        <Field label="線の色">
+          <ColorInput value={object.lineColor} onChange={(lineColor) => patch({ lineColor })} />
+        </Field>
+      </div>
+      <div className="flex items-center justify-between">
+        <Label className="text-xs text-muted-foreground">終点に矢印</Label>
+        <Toggle
+          size="sm"
+          variant="outline"
+          pressed={object.arrowEnd}
+          onPressedChange={(arrowEnd) => patch({ arrowEnd })}
+          aria-label="終点に矢印"
+          data-testid="connector-arrow"
+        >
+          {object.arrowEnd ? "ON" : "OFF"}
+        </Toggle>
+      </div>
+    </div>
+  );
+}
+
 function SlideFields() {
   const slide = useCurrentSlide();
   const dispatch = useEditorDispatch();
@@ -822,9 +940,17 @@ function SingleObjectFields({ object }: { object: SlideObject }) {
         {object.type === "text" && "テキスト"}
         {object.type === "chart" && chartLabel(object.chartType)}
         {object.type === "group" && `グループ (${object.children.length} 個)`}
+        {object.type === "connector" && "コネクタ"}
       </h3>
       <NameField object={object} />
-      <FrameFields object={object} />
+      {/* Connector geometry is derived from its endpoints. */}
+      {object.type === "connector" ? null : <FrameFields object={object} />}
+      {object.type === "connector" ? (
+        <>
+          <Separator />
+          <ConnectorFields object={object} />
+        </>
+      ) : null}
       {object.type === "shape" ? (
         <>
           <Separator />

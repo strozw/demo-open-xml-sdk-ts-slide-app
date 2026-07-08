@@ -1,4 +1,4 @@
-import type { Rect, SlideObject } from "./types";
+import type { ConnectionSite, Rect, SlideObject } from "./types";
 
 export function normalizeRect(a: { x: number; y: number }, b: { x: number; y: number }): Rect {
   return {
@@ -29,6 +29,30 @@ export function boundingBox(rects: readonly Rect[]): Rect {
 
 export function objectBounds(object: SlideObject): Rect {
   return { x: object.x, y: object.y, width: object.width, height: object.height };
+}
+
+/** Absolute position of a connection site (bounding-box edge midpoint). */
+export function sitePoint(bounds: Rect, site: ConnectionSite): { x: number; y: number } {
+  switch (site) {
+    case "top":
+      return { x: bounds.x + bounds.width / 2, y: bounds.y };
+    case "right":
+      return { x: bounds.x + bounds.width, y: bounds.y + bounds.height / 2 };
+    case "bottom":
+      return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height };
+    case "left":
+      return { x: bounds.x, y: bounds.y + bounds.height / 2 };
+  }
+}
+
+/** Facing pair of sites for connecting `from` to `to` (by center offset). */
+export function facingSites(from: Rect, to: Rect): [ConnectionSite, ConnectionSite] {
+  const dx = to.x + to.width / 2 - (from.x + from.width / 2);
+  const dy = to.y + to.height / 2 - (from.y + from.height / 2);
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? ["right", "left"] : ["left", "right"];
+  }
+  return dy >= 0 ? ["bottom", "top"] : ["top", "bottom"];
 }
 
 export function pointInRect(point: { x: number; y: number }, rect: Rect): boolean {

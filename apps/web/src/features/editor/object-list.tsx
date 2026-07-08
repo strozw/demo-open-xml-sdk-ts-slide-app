@@ -1,10 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { BarChart3, ChevronRight, Group, Shapes, Type } from "lucide-react";
+import { BarChart3, ChevronRight, Group, Shapes, Spline, Type } from "lucide-react";
 
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+} from "@workspace/ui/components/context-menu";
 import { cn } from "@workspace/ui/lib/utils";
 
+import { ObjectContextMenuItems } from "./object-context-menu";
 import { useCurrentSlide, useEditorDispatch, useEditorState } from "./store";
 import type { SlideObject } from "./types";
 
@@ -40,6 +46,8 @@ function ObjectIcon({ object }: { object: SlideObject }) {
       return <BarChart3 className="size-3.5 shrink-0" aria-hidden />;
     case "group":
       return <Group className="size-3.5 shrink-0" aria-hidden />;
+    case "connector":
+      return <Spline className="size-3.5 shrink-0" aria-hidden />;
     default:
       return null;
   }
@@ -136,65 +144,79 @@ function TreeNode({
 
   return (
     <>
-      <button
-        type="button"
-        data-testid={`object-node-${object.id}`}
-        draggable
-        onDragStart={(event) => dnd.onDragStart(event, { id: object.id, parentId })}
-        onDragOver={(event) => dnd.onDragOver(event, { id: object.id, parentId })}
-        onDrop={(event) => dnd.onDrop(event, { id: object.id, parentId })}
-        onDragEnd={dnd.onDragEnd}
-        className={cn(
-          "flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-xs transition-colors",
-          isSelected ? "bg-primary/10 font-medium text-primary" : "hover:bg-muted",
-          isDragging && "opacity-50",
-          dropEdge === "top" && "shadow-[0_-2px_0_0_var(--color-primary)]",
-          dropEdge === "bottom" && "shadow-[0_2px_0_0_var(--color-primary)]",
-        )}
-        style={{ paddingLeft: 8 + depth * 14 }}
-        onClick={(event) =>
-          event.shiftKey
-            ? dispatch({ type: "toggle-selected", id: object.id })
-            : dispatch({ type: "set-selection", ids: [object.id] })
-        }
-        onDoubleClick={() => onStartRename(object.id)}
-        title="ダブルクリックで名前を変更"
-      >
-        {isGroup ? (
-          <span
-            role="button"
-            tabIndex={0}
-            aria-label={isCollapsed ? "展開" : "折りたたむ"}
-            aria-expanded={!isCollapsed}
-            className="-m-0.5 rounded p-0.5 hover:bg-muted-foreground/15"
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleCollapse(object.id);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                event.stopPropagation();
-                onToggleCollapse(object.id);
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            type="button"
+            data-testid={`object-node-${object.id}`}
+            draggable
+            onDragStart={(event) => dnd.onDragStart(event, { id: object.id, parentId })}
+            onDragOver={(event) => dnd.onDragOver(event, { id: object.id, parentId })}
+            onDrop={(event) => dnd.onDrop(event, { id: object.id, parentId })}
+            onDragEnd={dnd.onDragEnd}
+            className={cn(
+              "flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-xs transition-colors",
+              isSelected ? "bg-primary/10 font-medium text-primary" : "hover:bg-muted",
+              isDragging && "opacity-50",
+              dropEdge === "top" && "shadow-[0_-2px_0_0_var(--color-primary)]",
+              dropEdge === "bottom" && "shadow-[0_2px_0_0_var(--color-primary)]",
+            )}
+            style={{ paddingLeft: 8 + depth * 14 }}
+            onClick={(event) =>
+              event.shiftKey
+                ? dispatch({ type: "toggle-selected", id: object.id })
+                : dispatch({ type: "set-selection", ids: [object.id] })
+            }
+            onDoubleClick={() => onStartRename(object.id)}
+            onContextMenu={() => {
+              // Menu actions operate on the selection: right-clicking an
+              // unselected row selects it first (like the canvas).
+              if (!state.selectedIds.includes(object.id)) {
+                dispatch({ type: "set-selection", ids: [object.id] });
               }
             }}
+            title="ダブルクリックで名前を変更"
           >
-            <ChevronRight
-              className={cn("size-3.5 transition-transform", !isCollapsed && "rotate-90")}
-              aria-hidden
-            />
-          </span>
-        ) : (
-          <span className="size-3.5 shrink-0" aria-hidden />
-        )}
-        <ObjectIcon object={object} />
-        <span className="min-w-0 flex-1 truncate">{object.name}</span>
-        {isGroup ? (
-          <span className="shrink-0 text-[10px] text-muted-foreground">
-            {object.children.length}
-          </span>
-        ) : null}
-      </button>
+            {isGroup ? (
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={isCollapsed ? "展開" : "折りたたむ"}
+                aria-expanded={!isCollapsed}
+                className="-m-0.5 rounded p-0.5 hover:bg-muted-foreground/15"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggleCollapse(object.id);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onToggleCollapse(object.id);
+                  }
+                }}
+              >
+                <ChevronRight
+                  className={cn("size-3.5 transition-transform", !isCollapsed && "rotate-90")}
+                  aria-hidden
+                />
+              </span>
+            ) : (
+              <span className="size-3.5 shrink-0" aria-hidden />
+            )}
+            <ObjectIcon object={object} />
+            <span className="min-w-0 flex-1 truncate">{object.name}</span>
+            {isGroup ? (
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                {object.children.length}
+              </span>
+            ) : null}
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ObjectContextMenuItems object={object} />
+        </ContextMenuContent>
+      </ContextMenu>
       {isGroup && !isCollapsed
         ? frontToBack(object.children).map((child) => (
             <TreeNode

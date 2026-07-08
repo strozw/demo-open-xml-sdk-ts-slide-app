@@ -119,6 +119,38 @@ export interface ChartObject extends BaseObject {
   exportAsImage?: boolean;
 }
 
+export type ConnectorKind = "straight" | "bent";
+
+/** Cardinal connection sites shared by every shape (bounding-box midpoints). */
+export type ConnectionSite = "top" | "right" | "bottom" | "left";
+
+export interface ConnectorEndpoint {
+  /** Id of the connected shape / text box (may live inside a group). */
+  objectId: string;
+  site: ConnectionSite;
+}
+
+/**
+ * Connector between two objects. Its geometry is DERIVED: the store
+ * recomputes `startPoint` / `endPoint` (absolute px, from the connected
+ * objects' bounds) and the own frame (bounding box of the two points) after
+ * every change, so connectors follow their endpoints. Connectors always
+ * live at the top level of a slide (never inside groups).
+ */
+export interface ConnectorObject extends BaseObject {
+  type: "connector";
+  connectorType: ConnectorKind;
+  start: ConnectorEndpoint;
+  end: ConnectorEndpoint;
+  startPoint: { x: number; y: number };
+  endPoint: { x: number; y: number };
+  lineColor: string;
+  /** Line width in px (1px = 9525 EMU on export). */
+  lineWidth: number;
+  /** Draw an arrowhead at the end point (`a:tailEnd`). */
+  arrowEnd: boolean;
+}
+
 /**
  * Group children keep absolute slide coordinates (not group-relative ones).
  * The exporter writes the group frame's chOff/chExt equal to its
@@ -135,7 +167,7 @@ export interface GroupObject extends BaseObject {
 }
 
 export type LeafObject = ShapeObject | TextObject | ChartObject;
-export type SlideObject = LeafObject | GroupObject;
+export type SlideObject = LeafObject | GroupObject | ConnectorObject;
 
 export interface Slide {
   id: string;

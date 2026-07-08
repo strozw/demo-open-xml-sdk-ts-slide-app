@@ -3,6 +3,8 @@ import { boundingBox, objectBounds } from "@/features/editor/geometry";
 import { shapeDefinition } from "@/features/editor/shape-defs";
 import type {
   ChartObject,
+  ConnectionSite,
+  ConnectorObject,
   Deck,
   GroupObject,
   LeafObject,
@@ -19,6 +21,7 @@ import { generatePresentation, pxToEmu } from "./pptx";
 import type {
   BodyAnchor,
   ChartDoc,
+  ConnectorDoc,
   FrameEmu,
   GroupDoc,
   ParagraphAlign,
@@ -92,6 +95,7 @@ function textBody(content: TextContent): TextBodyDoc | undefined {
 function shapeChild(object: ShapeObject): ShapeDoc {
   return {
     type: "shape",
+    refId: object.id,
     name: object.name,
     frame: frame(object),
     geometry: shapeDefinition(object.shape).presetGeometry,
@@ -108,6 +112,7 @@ function textChild(object: TextObject): ShapeDoc {
   // A text box is a borderless, unfilled shape carrying only a text body.
   return {
     type: "shape",
+    refId: object.id,
     name: object.name,
     frame: frame(object),
     geometry: "rect",
@@ -137,6 +142,7 @@ async function chartChild(object: ChartObject, options: ExportOptions): Promise<
   }
   return {
     type: "chart",
+    refId: object.id,
     name: object.name,
     frame: frame(object),
     chartType: object.chartType,
@@ -166,6 +172,26 @@ async function leafChild(object: LeafObject, options: ExportOptions): Promise<Sh
   }
 }
 
+/** Cardinal sites → connection-site index (rect-family cxn order). */
+const SITE_INDEX: Record<ConnectionSite, number> = { top: 0, left: 1, bottom: 2, right: 3 };
+
+function connectorChild(object: ConnectorObject): ConnectorDoc {
+  return {
+    type: "connector",
+    refId: object.id,
+    name: object.name,
+    frame: frame(object),
+    preset: object.connectorType === "bent" ? "bentConnector3" : "straightConnector1",
+    flipH: object.endPoint.x < object.startPoint.x,
+    flipV: object.endPoint.y < object.startPoint.y,
+    start: { refId: object.start.objectId, siteIndex: SITE_INDEX[object.start.site] },
+    end: { refId: object.end.objectId, siteIndex: SITE_INDEX[object.end.site] },
+    lineColor: hex(object.lineColor),
+    lineWidthEmu: pxToEmu(object.lineWidth),
+    arrowEnd: object.arrowEnd,
+  };
+}
+
 /**
  * Group children are exported with ABSOLUTE slide coordinates: the generator
  * writes the group's child offset (chOff/chExt) equal to the group frame, so
@@ -175,13 +201,18 @@ async function leafChild(object: LeafObject, options: ExportOptions): Promise<Sh
 async function groupChild(object: GroupObject, options: ExportOptions): Promise<GroupDoc> {
   return {
     type: "group",
+    refId: object.id,
     name: object.name,
     frame: frame(boundingBox(object.children.map(objectBounds))),
     children: await Promise.all(
-      object.children.map(
-        (child): Promise<SlideChildDoc> =>
-          child.type === "group" ? groupChild(child, options) : leafChild(child, options),
-      ),
+      object.children
+        // Connectors never live inside groups (the store keeps them
+        // top-level); the filter narrows the child type for mapping.
+        .filter((child): child is LeafObject | GroupObject => child.type !== "connector")
+        .map(
+          (child): Promise<SlideChildDoc> =>
+            child.type === "group" ? groupChild(child, options) : leafChild(child, options),
+        ),
     ),
   };
 }
@@ -196,10 +227,15 @@ export async function deckToPresentationDoc(
       deck.slides.map(async (slide) => ({
         background: hex(slide.background),
         children: await Promise.all(
-          slide.objects.map(
-            (object): Promise<SlideChildDoc> =>
-              object.type === "group" ? groupChild(object, options) : leafChild(object, options),
-          ),
+          slide.objects.map(async (object): Promise<SlideChildDoc> => {
+            if (object.type === "group") {
+              return groupChild(object, options);
+            }
+            if (object.type === "connector") {
+              return connectorChild(object);
+            }
+            return leafChild(object, options);
+          }),
         ),
       })),
     ),

@@ -158,6 +158,25 @@ const deck: Deck = {
           ],
         },
         {
+          // o1 (roundRect) → o2 (text box) bent connector with an arrow.
+          // Facing sites: o1 right (300,100) → o2 left (400,440).
+          id: "k1",
+          name: "Connector",
+          type: "connector",
+          connectorType: "bent",
+          start: { objectId: "o1", site: "right" },
+          end: { objectId: "o2", site: "left" },
+          startPoint: { x: 300, y: 100 },
+          endPoint: { x: 400, y: 440 },
+          x: 300,
+          y: 100,
+          width: 100,
+          height: 340,
+          lineColor: "#1f2937",
+          lineWidth: 2,
+          arrowEnd: true,
+        },
+        {
           id: "c1",
           name: "Chart",
           type: "chart",
@@ -555,6 +574,21 @@ assert.ok(surfaceXml.includes("<c:serAx>"), "surface chart has a series axis");
 // Slide background color.
 assert.ok(slide1.includes("<a:srgbClr val='F5F5F4' />"), "slide background fill");
 
+// ---- Connector (p:cxnSp) --------------------------------------------------
+// Numeric shape ids are assigned in document order (o1=2, o2=3, k1=4, ...),
+// so the semantic links point at the endpoint shapes.
+assert.ok(slide1.includes("<p:cxnSp>"), "connector element");
+assert.ok(slide1.includes("<a:stCxn id='2' idx='3' />"), "stCxn references o1 right site");
+assert.ok(slide1.includes("<a:endCxn id='3' idx='1' />"), "endCxn references o2 left site");
+assert.ok(slide1.includes("prst='bentConnector3'"), "bent connector preset");
+assert.ok(slide1.includes("<a:tailEnd type='triangle' />"), "arrowhead at the end");
+assert.ok(
+  slide1.includes(
+    `<a:off x='${300 * EMU_PER_PX}' y='${100 * EMU_PER_PX}' /><a:ext cx='${100 * EMU_PER_PX}' cy='${340 * EMU_PER_PX}' />`,
+  ),
+  "connector frame is the endpoint bounding box",
+);
+
 // ---- Embedded fonts ------------------------------------------------------
 const presentationXml = entries.get("ppt/presentation.xml")!.toString("utf8");
 assert.ok(presentationXml.includes("embedTrueTypeFonts='1'"), "embedTrueTypeFonts flag");
@@ -710,12 +744,15 @@ const normalizeText = (content: TextContent): TextContent => {
 function normalizeDeck(source: Deck): Deck {
   const clone = structuredClone(source);
   let counter = 0;
+  const idMap = new Map<string, string>();
   const nextId = (): string => {
     counter += 1;
     return `id-${counter}`;
   };
   const normalizeObject = (object: SlideObject): void => {
-    object.id = nextId();
+    const normalized = nextId();
+    idMap.set(object.id, normalized);
+    object.id = normalized;
     if (object.type === "shape" || object.type === "text") {
       object.text = normalizeText(object.text);
     } else if (object.type === "chart") {
@@ -726,9 +763,22 @@ function normalizeDeck(source: Deck): Deck {
       object.children.forEach(normalizeObject);
     }
   };
+  // Second pass: connector endpoint references follow the id rewrite (both
+  // decks are traversed in the same order, so the mapping is comparable).
+  const remapConnector = (object: SlideObject): void => {
+    if (object.type === "connector") {
+      object.start.objectId = idMap.get(object.start.objectId) ?? object.start.objectId;
+      object.end.objectId = idMap.get(object.end.objectId) ?? object.end.objectId;
+    } else if (object.type === "group") {
+      object.children.forEach(remapConnector);
+    }
+  };
   for (const slide of clone.slides) {
     slide.id = nextId();
     slide.objects.forEach(normalizeObject);
+  }
+  for (const slide of clone.slides) {
+    slide.objects.forEach(remapConnector);
   }
   return clone;
 }

@@ -3,6 +3,12 @@
 import { Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@workspace/ui/components/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@workspace/ui/components/context-menu";
 import { cn } from "@workspace/ui/lib/utils";
 
 import { ObjectContent } from "./object-view";
@@ -39,68 +45,87 @@ export function SlideList() {
         {state.deck.slides.map((slide, index) => {
           const active = slide.id === state.currentSlideId;
           return (
-            <div key={slide.id} className="group relative flex gap-2">
-              <p
-                className={cn(
-                  "w-5 shrink-0 pt-0.5 text-right text-xs",
-                  active ? "font-semibold text-primary" : "text-muted-foreground",
-                )}
-              >
-                {index + 1}
-              </p>
-              <button
-                type="button"
-                data-testid={`slide-thumb-${index}`}
-                aria-label={`スライド ${index + 1}`}
-                className={cn(
-                  "block overflow-hidden rounded-md border-2 bg-white text-left shadow-sm transition-colors",
-                  active ? "border-primary" : "border-transparent hover:border-muted-foreground/40",
-                )}
-                onClick={() => dispatch({ type: "select-slide", id: slide.id })}
-              >
+            <ContextMenu key={slide.id}>
+              <ContextMenuTrigger asChild>
                 <div
-                  style={{ width: THUMB_WIDTH, height: SLIDE_HEIGHT * THUMB_SCALE }}
-                  className="relative"
+                  className="group relative flex gap-2"
+                  onContextMenu={() => dispatch({ type: "select-slide", id: slide.id })}
                 >
-                  <div
-                    className="pointer-events-none absolute left-0 top-0"
-                    style={{
-                      width: SLIDE_WIDTH,
-                      height: SLIDE_HEIGHT,
-                      transform: `scale(${THUMB_SCALE})`,
-                      transformOrigin: "top left",
-                      backgroundColor: slide.background,
-                    }}
+                  <p
+                    className={cn(
+                      "w-5 shrink-0 pt-0.5 text-right text-xs",
+                      active ? "font-semibold text-primary" : "text-muted-foreground",
+                    )}
                   >
-                    {slide.objects.map((object) => (
+                    {index + 1}
+                  </p>
+                  <button
+                    type="button"
+                    data-testid={`slide-thumb-${index}`}
+                    aria-label={`スライド ${index + 1}`}
+                    className={cn(
+                      "block overflow-hidden rounded-md border-2 bg-white text-left shadow-sm transition-colors",
+                      active
+                        ? "border-primary"
+                        : "border-transparent hover:border-muted-foreground/40",
+                    )}
+                    onClick={() => dispatch({ type: "select-slide", id: slide.id })}
+                  >
+                    <div
+                      style={{ width: THUMB_WIDTH, height: SLIDE_HEIGHT * THUMB_SCALE }}
+                      className="relative"
+                    >
                       <div
-                        key={object.id}
-                        className="absolute"
+                        className="pointer-events-none absolute left-0 top-0"
                         style={{
-                          left: object.x,
-                          top: object.y,
-                          width: object.width,
-                          height: object.height,
+                          width: SLIDE_WIDTH,
+                          height: SLIDE_HEIGHT,
+                          transform: `scale(${THUMB_SCALE})`,
+                          transformOrigin: "top left",
+                          backgroundColor: slide.background,
                         }}
                       >
-                        <ObjectContent object={object} />
+                        {slide.objects.map((object) => (
+                          <div
+                            key={object.id}
+                            className="absolute"
+                            style={{
+                              left: object.x,
+                              top: object.y,
+                              width: object.width,
+                              height: object.height,
+                            }}
+                          >
+                            <ObjectContent object={object} />
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  </button>
+                  {state.deck.slides.length > 1 ? (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`スライド ${index + 1} を削除`}
+                      className="absolute right-1 top-1 hidden bg-background/80 group-hover:inline-flex"
+                      onClick={() => dispatch({ type: "remove-slide", id: slide.id })}
+                    >
+                      <Trash2 />
+                    </Button>
+                  ) : null}
                 </div>
-              </button>
-              {state.deck.slides.length > 1 ? (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`スライド ${index + 1} を削除`}
-                  className="absolute right-1 top-1 hidden bg-background/80 group-hover:inline-flex"
-                  onClick={() => dispatch({ type: "remove-slide", id: slide.id })}
+              </ContextMenuTrigger>
+              <ContextMenuContent>
+                <ContextMenuItem
+                  variant="destructive"
+                  disabled={state.deck.slides.length <= 1}
+                  data-testid={`slide-context-delete-${index}`}
+                  onSelect={() => dispatch({ type: "remove-slide", id: slide.id })}
                 >
-                  <Trash2 />
-                </Button>
-              ) : null}
-            </div>
+                  <Trash2 /> 削除
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
           );
         })}
       </div>
