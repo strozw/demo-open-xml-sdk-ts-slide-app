@@ -395,6 +395,26 @@ const deck: Deck = {
                 },
               ],
             },
+            {
+              // Connector nested inside the group, joining o5 → o6.
+              // o5.right = (950,425), o6.left = (1000,440).
+              id: "gk1",
+              name: "InnerConnector",
+              type: "connector",
+              connectorType: "straight",
+              start: { objectId: "o5", site: "right" },
+              end: { objectId: "o6", site: "left" },
+              startPoint: { x: 950, y: 425 },
+              endPoint: { x: 1000, y: 440 },
+              x: 950,
+              y: 425,
+              width: 50,
+              height: 15,
+              lineColor: "#1f2937",
+              lineWidth: 2,
+              startArrow: { type: "none", size: "medium" },
+              endArrow: { type: "triangle", size: "medium" },
+            },
           ],
         },
       ],
@@ -553,6 +573,14 @@ const innerGroupXfrm =
   `<a:chOff x='${1000 * EMU_PER_PX}' y='${420 * EMU_PER_PX}' />` +
   `<a:chExt cx='${120 * EMU_PER_PX}' cy='${80 * EMU_PER_PX}' />`;
 assert.ok(slide3.includes(innerGroupXfrm), "inner group chOff/chExt equals its absolute frame");
+
+// A connector nested inside a group exports as a p:cxnSp within the p:grpSp,
+// still referencing its endpoint shapes by their numeric ids.
+assert.ok(slide3.includes("<p:cxnSp>"), "connector inside the group");
+assert.ok(
+  slide3.includes("<a:stCxn") && slide3.includes("<a:endCxn"),
+  "grouped connector keeps its semantic endpoints",
+);
 
 // Chart parts contain the right plot types and data.
 const chartXmls = names

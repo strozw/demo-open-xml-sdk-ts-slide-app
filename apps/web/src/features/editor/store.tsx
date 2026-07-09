@@ -98,27 +98,27 @@ function withDerivedFrames(object: SlideObject): SlideObject {
 }
 
 /**
- * Connector geometry follows its endpoints: recompute the site points from
- * the connected objects' current bounds, then set the frame to the bounding
- * box of the whole routed polyline (so the route — which extends past the
- * endpoints by the clearance gap — stays inside the selectable frame).
- * Connectors whose endpoints no longer exist are dropped.
+ * Re-routes every connector at any depth (they may live inside groups).
+ * Endpoints resolve against the whole slide tree `root`, so a grouped
+ * connector can still reference objects anywhere; the frame is the routed
+ * polyline's bounding box. Connectors with a missing attached endpoint are
+ * dropped.
  */
-function syncConnectors(objects: SlideObject[]): SlideObject[] {
-  // Attached endpoints track the connected object's current site; free
-  // endpoints keep their stored point. An attached endpoint whose object is
-  // gone resolves to null and the connector is dropped.
+function syncConnectors(nodes: SlideObject[], root: SlideObject[]): SlideObject[] {
   const resolveEndpoint = (endpoint: ConnectorObject["start"]): { x: number; y: number } | null => {
     if (endpoint.objectId === undefined) {
       return endpoint.point ?? null;
     }
-    const target = findObjectDeep(objects, endpoint.objectId);
+    const target = findObjectDeep(root, endpoint.objectId);
     if (!target || target.type === "connector") {
       return null;
     }
     return sitePoint(objectBounds(target), endpoint.site);
   };
-  return objects.flatMap((object): SlideObject[] => {
+  return nodes.flatMap((object): SlideObject[] => {
+    if (object.type === "group") {
+      return [{ ...object, children: syncConnectors(object.children, root) }];
+    }
     if (object.type !== "connector") {
       return [object];
     }
@@ -146,9 +146,13 @@ function syncConnectors(objects: SlideObject[]): SlideObject[] {
   });
 }
 
-/** Full geometry normalization: group frames, then connector routing. */
+/**
+ * Full geometry normalization: first route every connector (needs the whole
+ * tree for endpoint lookup), then recompute group frames bottom-up so they
+ * enclose the routed connector children too.
+ */
 function deriveFrames(objects: SlideObject[]): SlideObject[] {
-  return syncConnectors(objects.map(withDerivedFrames));
+  return syncConnectors(objects, objects).map(withDerivedFrames);
 }
 
 /** Applies `transform` to the object with the given id, wherever it nests. */
@@ -472,28 +476,27 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
           idMap,
         );
         const copiedSet = new Set(copiedIds);
-        // Copied connectors re-point to the copied endpoints when those were
-        // duplicated in the same operation (else they stay on the originals).
-        const remapped = duplicated.map((object) =>
-          object.type === "connector" && copiedSet.has(object.id)
-            ? {
+        // Copied connectors (at any depth) re-point to the copied endpoints
+        // when those were duplicated in the same operation.
+        const remapEndpoint = (endpoint: ConnectorObject["start"]): ConnectorObject["start"] =>
+          endpoint.objectId
+            ? { ...endpoint, objectId: idMap.get(endpoint.objectId) ?? endpoint.objectId }
+            : endpoint;
+        const remapConnectors = (nodes: SlideObject[]): SlideObject[] =>
+          nodes.map((object) => {
+            if (object.type === "group") {
+              return { ...object, children: remapConnectors(object.children) };
+            }
+            if (object.type === "connector" && copiedSet.has(object.id)) {
+              return {
                 ...object,
-                start: {
-                  ...object.start,
-                  objectId: object.start.objectId
-                    ? (idMap.get(object.start.objectId) ?? object.start.objectId)
-                    : undefined,
-                },
-                end: {
-                  ...object.end,
-                  objectId: object.end.objectId
-                    ? (idMap.get(object.end.objectId) ?? object.end.objectId)
-                    : undefined,
-                },
-              }
-            : object,
-        );
-        return { ...slide, objects: deriveFrames(remapped) };
+                start: remapEndpoint(object.start),
+                end: remapEndpoint(object.end),
+              };
+            }
+            return object;
+          });
+        return { ...slide, objects: deriveFrames(remapConnectors(duplicated)) };
       });
       if (copiedIds.length === 0) {
         return state;
@@ -504,25 +507,44 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
     case "group-selected": {
       const slide = currentSlide(state);
       const selected = new Set(state.selectedIds);
-      // Connectors stay top-level: they are never pulled into a group.
-      const members = slide.objects.filter(
-        (object) => selected.has(object.id) && object.type !== "connector",
-      );
+      const members = slide.objects.filter((object) => selected.has(object.id));
       if (members.length < 2) {
         return state;
       }
+      // Pull in any top-level connector whose BOTH endpoints live inside the
+      // grouped members, so a connector between two grouped shapes joins the
+      // group (and duplicates / deletes with it).
+      const memberSubtreeIds = new Set<string>();
+      const collectIds = (object: SlideObject): void => {
+        memberSubtreeIds.add(object.id);
+        if (object.type === "group") {
+          object.children.forEach(collectIds);
+        }
+      };
+      members.forEach(collectIds);
+      const memberSet = new Set(members.map((member) => member.id));
+      const autoConnectors = slide.objects.filter(
+        (object) =>
+          object.type === "connector" &&
+          !memberSet.has(object.id) &&
+          object.start.objectId !== undefined &&
+          object.end.objectId !== undefined &&
+          memberSubtreeIds.has(object.start.objectId) &&
+          memberSubtreeIds.has(object.end.objectId),
+      );
+      const allMembers = [...members, ...autoConnectors];
       // Members keep their own structure, so grouping a group nests it.
       // Children stay in absolute slide coordinates; the group frame is the
       // bounding box of its members.
-      const frame = boundingBox(members.map(objectBounds));
+      const frame = boundingBox(allMembers.map(objectBounds));
       const group: GroupObject = {
         id: createId("object"),
         name: uniqueName("グループ", slideNames(slide)),
         type: "group",
         ...frame,
-        children: members,
+        children: allMembers,
       };
-      const memberIds = new Set(members.map((member) => member.id));
+      const memberIds = new Set(allMembers.map((member) => member.id));
       const remaining = slide.objects.filter((object) => !memberIds.has(object.id));
       const next = patchSlide(state, (s) => ({
         ...s,

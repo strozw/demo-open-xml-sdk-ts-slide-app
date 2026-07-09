@@ -37,13 +37,10 @@ export function ObjectContextMenuItems({
   const dispatch = useEditorDispatch();
   const selectedObjects = useSelectedObjects();
 
-  // Grouping only combines top-level siblings (and never connectors), so
-  // offer it only when the whole multi-selection qualifies.
+  // Grouping only combines top-level siblings.
   const topLevelIds = new Set(slide.objects.map((candidate) => candidate.id));
   const canGroup =
-    state.selectedIds.length >= 2 &&
-    state.selectedIds.every((id) => topLevelIds.has(id)) &&
-    selectedObjects.every((candidate) => candidate.type !== "connector");
+    state.selectedIds.length >= 2 && state.selectedIds.every((id) => topLevelIds.has(id));
 
   // Connecting needs exactly two non-connector objects (nested ones too).
   const canConnect =

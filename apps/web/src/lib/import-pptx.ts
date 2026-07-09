@@ -94,19 +94,26 @@ const ARROW_SIZE_FROM_OOXML: Record<string, ArrowEnd["size"]> = {
 
 /**
  * Numeric `p:cNvPr@id` → restored editor object id, per slide. Connectors
- * reference their endpoints through these numeric ids.
+ * reference their endpoints through these numeric ids, so the whole slide's
+ * ids are pre-assigned (`prescanShapeIds`) before objects are built — a
+ * connector inside a group can then resolve a target parsed later.
  */
 type ShapeIdRegistry = Map<string, string>;
 
-function registerShapeId(
-  registry: ShapeIdRegistry,
-  cNvPr: XElement | null | undefined,
-  editorId: string,
-): void {
-  const numericId = cNvPr?.attribute("id")?.value;
-  if (numericId) {
-    registry.set(numericId, editorId);
+/** Pre-assigns an editor id to every `cNvPr` under `root`, keyed by @id. */
+function prescanShapeIds(root: XElement, registry: ShapeIdRegistry): void {
+  for (const cNvPr of root.descendants(P.cNvPr)) {
+    const numericId = cNvPr.attribute("id")?.value;
+    if (numericId && !registry.has(numericId)) {
+      registry.set(numericId, createId("object"));
+    }
   }
+}
+
+/** Editor id for a shape, using its pre-assigned id when it has one. */
+function editorIdFor(registry: ShapeIdRegistry, cNvPr: XElement | null | undefined): string {
+  const numericId = cNvPr?.attribute("id")?.value;
+  return (numericId && registry.get(numericId)) || createId("object");
 }
 
 function hexColor(srgbClr: XElement | null | undefined): string | undefined {
@@ -231,8 +238,7 @@ function parseShape(sp: XElement, registry: ShapeIdRegistry): ShapeObject | Text
   const spPr = sp.element(P.spPr);
   const frame = parseXfrm(spPr?.element(A.xfrm), `図形「${name}」`);
   const text = parseTextContent(sp.element(P.txBody));
-  const id = createId("object");
-  registerShapeId(registry, cNvPr, id);
+  const id = editorIdFor(registry, cNvPr);
 
   if (isTextBox) {
     return { id, name, type: "text", ...frame, text };
@@ -283,8 +289,9 @@ function parseChartFrame(graphicFrame: XElement, registry: ShapeIdRegistry): Cha
     );
   }
   const chart = chartFromMeta(meta, frame, `グラフ「${name}」`);
-  registerShapeId(registry, cNvPr, chart.id);
-  return chart;
+  // Use the slide-assigned id (not the metadata's) so connector references
+  // that target this chart resolve to it.
+  return { ...chart, id: editorIdFor(registry, cNvPr) };
 }
 
 async function readPartBytes(part: OpenXmlPart): Promise<Uint8Array> {
@@ -326,8 +333,7 @@ async function parsePic(
   }
   if (meta) {
     const chart = chartFromMeta(meta, frame, `画像「${name}」`);
-    registerShapeId(registry, cNvPr, chart.id);
-    return { ...chart, exportAsImage: true };
+    return { ...chart, id: editorIdFor(registry, cNvPr), exportAsImage: true };
   }
 
   // Plain image: restore the bytes from the media part.
@@ -340,10 +346,8 @@ async function parsePic(
       `${UNSUPPORTED_FILE} (未対応の画像形式: ${mediaPart.getContentType() ?? "不明"})`,
     );
   }
-  const id = createId("object");
-  registerShapeId(registry, cNvPr, id);
   return {
-    id,
+    id: editorIdFor(registry, cNvPr),
     name,
     type: "image",
     ...frame,
@@ -472,16 +476,17 @@ async function parseGroup(
       continue;
     }
     // Child coordinates are absolute (the exporter writes chOff == off at
-    // every level), so nested groups parse with the same recursion.
+    // every level). Ids are pre-assigned, so a grouped connector's endpoint
+    // references resolve regardless of parse order.
     if (child.name === P.grpSp) {
       children.push(await parseGroup(child, relTargets, pkg, registry));
+    } else if (child.name === P.cxnSp) {
+      children.push(parseConnector(child, registry));
     } else {
       children.push(await parseLeaf(child, relTargets, pkg, registry));
     }
   }
-  const id = createId("object");
-  registerShapeId(registry, cNvPr, id);
-  return { id, name, type: "group", ...frame, children };
+  return { id: editorIdFor(registry, cNvPr), name, type: "group", ...frame, children };
 }
 
 async function parseSlide(
@@ -492,27 +497,28 @@ async function parseSlide(
   const root = (await slidePart.getXDocument()).root!;
   const cSld = root.element(P.cSld);
   const background = solidFillColor(cSld?.element(P.bg)?.element(P.bgPr)) ?? "#ffffff";
+  const spTree = cSld?.element(P.spTree);
 
-  // Two-phase parse: connectors reference other shapes by numeric id, and
-  // may precede their endpoints in z-order, so they resolve after every
-  // other object has been parsed (order is preserved).
+  // Pre-assign every shape id so connectors (at any depth) resolve their
+  // endpoint references regardless of parse / z-order.
   const registry: ShapeIdRegistry = new Map();
-  const ordered: (SlideObject | { pendingConnector: XElement })[] = [];
-  for (const child of cSld?.element(P.spTree)?.elements() ?? []) {
+  if (spTree) {
+    prescanShapeIds(spTree, registry);
+  }
+
+  const objects: SlideObject[] = [];
+  for (const child of spTree?.elements() ?? []) {
     if (child.name === P.nvGrpSpPr || child.name === P.grpSpPr) {
       continue;
     }
     if (child.name === P.cxnSp) {
-      ordered.push({ pendingConnector: child });
+      objects.push(parseConnector(child, registry));
     } else if (child.name === P.grpSp) {
-      ordered.push(await parseGroup(child, relTargets, pkg, registry));
+      objects.push(await parseGroup(child, relTargets, pkg, registry));
     } else {
-      ordered.push(await parseLeaf(child, relTargets, pkg, registry));
+      objects.push(await parseLeaf(child, relTargets, pkg, registry));
     }
   }
-  const objects: SlideObject[] = ordered.map((entry) =>
-    "pendingConnector" in entry ? parseConnector(entry.pendingConnector, registry) : entry,
-  );
   return { id: createId("slide"), background, objects };
 }
 

@@ -414,6 +414,20 @@ export function translateObject<T extends SlideObject>(object: T, dx: number, dy
       children: object.children.map((child) => translateObject(child, dx, dy)),
     };
   }
+  if (object.type === "connector") {
+    // Attached endpoints re-derive from their objects; only free-endpoint
+    // points are the source of truth and must move with the connector.
+    const shift = (p?: Point): Point | undefined => (p ? { x: p.x + dx, y: p.y + dy } : p);
+    return {
+      ...object,
+      x: object.x + dx,
+      y: object.y + dy,
+      startPoint: shift(object.startPoint)!,
+      endPoint: shift(object.endPoint)!,
+      start: { ...object.start, point: shift(object.start.point) },
+      end: { ...object.end, point: shift(object.end.point) },
+    };
+  }
   return { ...object, x: object.x + dx, y: object.y + dy };
 }
 
@@ -434,6 +448,18 @@ export function fitObjectToFrame<T extends SlideObject>(object: T, from: Rect, t
       ...object,
       ...map(objectBounds(object)),
       children: object.children.map((child) => fitObjectToFrame(child, from, to)),
+    };
+  }
+  if (object.type === "connector") {
+    const mapPoint = (p?: Point): Point | undefined =>
+      p ? { x: to.x + (p.x - from.x) * scaleX, y: to.y + (p.y - from.y) * scaleY } : p;
+    return {
+      ...object,
+      ...map(objectBounds(object)),
+      startPoint: mapPoint(object.startPoint)!,
+      endPoint: mapPoint(object.endPoint)!,
+      start: { ...object.start, point: mapPoint(object.start.point) },
+      end: { ...object.end, point: mapPoint(object.end.point) },
     };
   }
   return { ...object, ...map(objectBounds(object)) };

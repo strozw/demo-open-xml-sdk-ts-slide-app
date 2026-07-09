@@ -264,14 +264,15 @@ async function groupChild(object: GroupObject, options: ExportOptions): Promise<
     name: object.name,
     frame: frame(boundingBox(object.children.map(objectBounds))),
     children: await Promise.all(
-      object.children
-        // Connectors never live inside groups (the store keeps them
-        // top-level); the filter narrows the child type for mapping.
-        .filter((child): child is LeafObject | GroupObject => child.type !== "connector")
-        .map(
-          (child): Promise<SlideChildDoc> =>
-            child.type === "group" ? groupChild(child, options) : leafChild(child, options),
-        ),
+      object.children.map((child): Promise<SlideChildDoc> => {
+        if (child.type === "group") {
+          return groupChild(child, options);
+        }
+        if (child.type === "connector") {
+          return Promise.resolve(connectorChild(child));
+        }
+        return leafChild(child, options);
+      }),
     ),
   };
 }
