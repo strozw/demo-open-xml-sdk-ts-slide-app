@@ -225,7 +225,23 @@ function connectorElement(connector: ConnectorDoc, id: number, shapeIds: ShapeId
         A.ln,
         attr("w", connector.lineWidthEmu),
         solidFill(connector.lineColor),
-        connector.arrowEnd ? new XElement(A.tailEnd, attr("type", "triangle")) : null,
+        // CT_LineProperties order: headEnd before tailEnd, both at the end.
+        connector.startArrow
+          ? new XElement(
+              A.headEnd,
+              attr("type", connector.startArrow.type),
+              attr("w", connector.startArrow.size),
+              attr("len", connector.startArrow.size),
+            )
+          : null,
+        connector.endArrow
+          ? new XElement(
+              A.tailEnd,
+              attr("type", connector.endArrow.type),
+              attr("w", connector.endArrow.size),
+              attr("len", connector.endArrow.size),
+            )
+          : null,
       ),
     ),
   );

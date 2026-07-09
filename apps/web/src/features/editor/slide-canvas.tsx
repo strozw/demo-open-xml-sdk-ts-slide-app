@@ -449,7 +449,8 @@ export function SlideCanvas() {
             height: 0,
             lineColor: "#1f2937",
             lineWidth: 2,
-            arrowEnd: true,
+            startArrow: { type: "none", size: "medium" },
+            endArrow: { type: "triangle", size: "medium" },
           },
         });
       } else {

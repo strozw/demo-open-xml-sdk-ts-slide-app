@@ -163,8 +163,9 @@ export interface ConnectorDoc {
   /** RRGGBB (no `#`). */
   lineColor: string;
   lineWidthEmu: number;
-  /** `a:tailEnd type="triangle"` arrowhead at the end point. */
-  arrowEnd: boolean;
+  /** Arrowheads. `type` is the OOXML a:headEnd/a:tailEnd type; undefined = none. */
+  startArrow?: { type: string; size: "sm" | "med" | "lg" };
+  endArrow?: { type: string; size: "sm" | "med" | "lg" };
 }
 
 export type SlideChildDoc = ShapeDoc | ChartDoc | GroupDoc | ConnectorDoc | ImageDoc;

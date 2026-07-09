@@ -175,7 +175,8 @@ const deck: Deck = {
           height: 340,
           lineColor: "#1f2937",
           lineWidth: 2,
-          arrowEnd: true,
+          startArrow: { type: "none", size: "medium" },
+          endArrow: { type: "triangle", size: "large" },
         },
         {
           id: "c1",
@@ -594,7 +595,11 @@ assert.ok(slide1.includes("<p:cxnSp>"), "connector element");
 assert.ok(slide1.includes("<a:stCxn id='2' idx='3' />"), "stCxn references o1 right site");
 assert.ok(slide1.includes("<a:endCxn id='3' idx='1' />"), "endCxn references o2 left site");
 assert.ok(slide1.includes("prst='bentConnector3'"), "bent connector preset");
-assert.ok(slide1.includes("<a:tailEnd type='triangle' />"), "arrowhead at the end");
+assert.ok(
+  slide1.includes("<a:tailEnd type='triangle' w='lg' len='lg' />"),
+  "large triangle arrowhead at the end",
+);
+assert.ok(!slide1.includes("<a:headEnd"), "no start arrowhead (type none)");
 
 // Orthogonal routing adapts its corner count to the geometry: a facing pair
 // with room needs 2 corners; a target behind the ports wraps around to 4.
@@ -665,7 +670,8 @@ assert.ok(
                 height: 200,
                 lineColor: "#1f2937",
                 lineWidth: 2,
-                arrowEnd: true,
+                startArrow: { type: "none", size: "medium" },
+                endArrow: { type: "triangle", size: "medium" },
               },
             ],
           },

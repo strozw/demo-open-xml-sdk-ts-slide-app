@@ -129,6 +129,16 @@ export interface ImageObject extends BaseObject {
 
 export type ConnectorKind = "straight" | "bent";
 
+/** Arrowhead shape (maps to OOXML `a:headEnd`/`a:tailEnd` @type). */
+export type ArrowType = "none" | "triangle" | "stealth" | "arrow" | "diamond" | "oval";
+/** Arrowhead size (maps to OOXML @w / @len sm/med/lg). */
+export type ArrowSize = "small" | "medium" | "large";
+
+export interface ArrowEnd {
+  type: ArrowType;
+  size: ArrowSize;
+}
+
 /** Cardinal connection sites shared by every shape (bounding-box midpoints). */
 export type ConnectionSite = "top" | "right" | "bottom" | "left";
 
@@ -161,8 +171,10 @@ export interface ConnectorObject extends BaseObject {
   lineColor: string;
   /** Line width in px (1px = 9525 EMU on export). */
   lineWidth: number;
-  /** Draw an arrowhead at the end point (`a:tailEnd`). */
-  arrowEnd: boolean;
+  /** Arrowhead at the start point (`a:headEnd`). */
+  startArrow: ArrowEnd;
+  /** Arrowhead at the end point (`a:tailEnd`). */
+  endArrow: ArrowEnd;
   /**
    * Bent connectors only: position of the primary mid-line (0..1, default
    * 0.5). The number of corners is derived from geometry, not this value.

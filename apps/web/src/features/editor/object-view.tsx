@@ -7,6 +7,7 @@ import { fontDefinition, segmentByStyle } from "./fonts";
 import { connectorRoutePoints } from "./geometry";
 import { shapeDefinition } from "./shape-defs";
 import type {
+  ArrowEnd,
   ConnectorObject,
   GroupObject,
   ImageObject,
@@ -105,6 +106,58 @@ function ShapeSvg({ object }: { object: ShapeObject }) {
   );
 }
 
+const ARROW_MARKER_SIZE: Record<ArrowEnd["size"], number> = {
+  small: 4,
+  medium: 6.5,
+  large: 9,
+};
+
+/** SVG marker element for an arrowhead, or null when the end has none. */
+function arrowMarker(id: string, arrow: ArrowEnd, color: string): React.ReactNode {
+  if (arrow.type === "none") {
+    return null;
+  }
+  const size = ARROW_MARKER_SIZE[arrow.size];
+  // viewBox 0 0 10 10, pointing right (tip at x=10); auto-start-reverse
+  // flips it for the start end.
+  let shape: React.ReactNode;
+  let refX = 9;
+  switch (arrow.type) {
+    case "triangle":
+      shape = <path d="M0,0 L10,5 L0,10 Z" fill={color} />;
+      break;
+    case "stealth":
+      shape = <path d="M0,0 L10,5 L0,10 L3,5 Z" fill={color} />;
+      break;
+    case "arrow":
+      shape = <path d="M0,1 L10,5 L0,9" fill="none" stroke={color} strokeWidth={2} />;
+      break;
+    case "diamond":
+      shape = <path d="M5,0 L10,5 L5,10 L0,5 Z" fill={color} />;
+      refX = 5;
+      break;
+    case "oval":
+      shape = <circle cx={5} cy={5} r={4.5} fill={color} />;
+      refX = 5;
+      break;
+    default:
+      return null;
+  }
+  return (
+    <marker
+      id={id}
+      viewBox="0 0 10 10"
+      refX={refX}
+      refY={5}
+      markerWidth={size}
+      markerHeight={size}
+      orient="auto-start-reverse"
+    >
+      {shape}
+    </marker>
+  );
+}
+
 /**
  * Connector rendering: a straight segment, or an orthogonal route whose
  * corner count adapts to the endpoint geometry (see `connectorRoutePoints`),
@@ -117,7 +170,8 @@ function ConnectorView({ object }: { object: ConnectorObject }) {
   const path = points
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x - object.x} ${point.y - object.y}`)
     .join(" ");
-  const markerId = `connector-arrow-${object.id}`;
+  const startId = `connector-arrow-start-${object.id}`;
+  const endId = `connector-arrow-end-${object.id}`;
 
   return (
     <svg
@@ -127,28 +181,18 @@ function ConnectorView({ object }: { object: ConnectorObject }) {
       preserveAspectRatio="none"
       style={{ overflow: "visible" }}
     >
-      {object.arrowEnd ? (
-        <defs>
-          <marker
-            id={markerId}
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill={object.lineColor} />
-          </marker>
-        </defs>
-      ) : null}
+      <defs>
+        {arrowMarker(startId, object.startArrow, object.lineColor)}
+        {arrowMarker(endId, object.endArrow, object.lineColor)}
+      </defs>
       <path
         d={path}
         fill="none"
         stroke={object.lineColor}
         strokeWidth={object.lineWidth}
         strokeLinejoin="round"
-        markerEnd={object.arrowEnd ? `url(#${markerId})` : undefined}
+        markerStart={object.startArrow.type === "none" ? undefined : `url(#${startId})`}
+        markerEnd={object.endArrow.type === "none" ? undefined : `url(#${endId})`}
       />
     </svg>
   );

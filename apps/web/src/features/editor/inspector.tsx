@@ -48,6 +48,9 @@ import {
 } from "./store";
 import { createId } from "./types";
 import type {
+  ArrowEnd,
+  ArrowSize,
+  ArrowType,
   CharStyle,
   ChartKind,
   ChartObject,
@@ -854,20 +857,84 @@ function ConnectorFields({ object }: { object: ConnectorObject }) {
           <ColorInput value={object.lineColor} onChange={(lineColor) => patch({ lineColor })} />
         </Field>
       </div>
-      <div className="flex items-center justify-between">
-        <Label className="text-xs text-muted-foreground">終点に矢印</Label>
-        <Toggle
-          size="sm"
-          variant="outline"
-          pressed={object.arrowEnd}
-          onPressedChange={(arrowEnd) => patch({ arrowEnd })}
-          aria-label="終点に矢印"
-          data-testid="connector-arrow"
-        >
-          {object.arrowEnd ? "ON" : "OFF"}
-        </Toggle>
-      </div>
+      <ConnectorArrowField
+        label="始点の矢印"
+        endpoint="start"
+        arrow={object.startArrow}
+        onChange={(startArrow) => patch({ startArrow })}
+      />
+      <ConnectorArrowField
+        label="終点の矢印"
+        endpoint="end"
+        arrow={object.endArrow}
+        onChange={(endArrow) => patch({ endArrow })}
+      />
     </div>
+  );
+}
+
+const ARROW_TYPE_ITEMS: { value: ArrowType; label: string }[] = [
+  { value: "none", label: "なし" },
+  { value: "triangle", label: "三角" },
+  { value: "stealth", label: "細三角" },
+  { value: "arrow", label: "線" },
+  { value: "diamond", label: "ひし形" },
+  { value: "oval", label: "円" },
+];
+
+const ARROW_SIZE_ITEMS: { value: ArrowSize; label: string }[] = [
+  { value: "small", label: "小" },
+  { value: "medium", label: "中" },
+  { value: "large", label: "大" },
+];
+
+function ConnectorArrowField({
+  label,
+  endpoint,
+  arrow,
+  onChange,
+}: {
+  label: string;
+  endpoint: "start" | "end";
+  arrow: ArrowEnd;
+  onChange: (arrow: ArrowEnd) => void;
+}) {
+  return (
+    <Field label={label}>
+      <div className="grid grid-cols-2 gap-2">
+        <Select
+          value={arrow.type}
+          onValueChange={(type) => onChange({ ...arrow, type: type as ArrowType })}
+        >
+          <SelectTrigger className="h-8 w-full" data-testid={`connector-${endpoint}-arrow-type`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ARROW_TYPE_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={arrow.size}
+          disabled={arrow.type === "none"}
+          onValueChange={(size) => onChange({ ...arrow, size: size as ArrowSize })}
+        >
+          <SelectTrigger className="h-8 w-full" data-testid={`connector-${endpoint}-arrow-size`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ARROW_SIZE_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </Field>
   );
 }
 

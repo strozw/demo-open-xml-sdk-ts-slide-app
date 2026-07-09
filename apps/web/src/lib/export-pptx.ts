@@ -201,6 +201,16 @@ const BENT_PRESET_BY_CORNERS: Record<number, ConnectorDoc["preset"]> = {
   4: "bentConnector5",
 };
 
+const ARROW_SIZE_TOKEN = { small: "sm", medium: "med", large: "lg" } as const;
+
+/** Editor arrowhead → OOXML head/tail end, or undefined for "none". */
+function arrowDoc(arrow: ConnectorObject["startArrow"]): ConnectorDoc["startArrow"] {
+  if (arrow.type === "none") {
+    return undefined;
+  }
+  return { type: arrow.type, size: ARROW_SIZE_TOKEN[arrow.size] };
+}
+
 function connectorChild(object: ConnectorObject): ConnectorDoc {
   // Pick the bent preset by the editor's corner count so PowerPoint draws a
   // route with the same number of bends. The frame is the endpoint bounding
@@ -236,7 +246,8 @@ function connectorChild(object: ConnectorObject): ConnectorDoc {
       : undefined,
     lineColor: hex(object.lineColor),
     lineWidthEmu: pxToEmu(object.lineWidth),
-    arrowEnd: object.arrowEnd,
+    startArrow: arrowDoc(object.startArrow),
+    endArrow: arrowDoc(object.endArrow),
   };
 }
 

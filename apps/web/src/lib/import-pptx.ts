@@ -18,6 +18,7 @@ import {
   type CharStyle,
   type ChartObject,
   type ConnectionSite,
+  type ArrowEnd,
   type ConnectorObject,
   type Deck,
   type GroupObject,
@@ -82,6 +83,14 @@ const ANCHOR_FROM_OOXML: Record<string, TextVAlign> = {
 
 /** Connection-site index → cardinal site (matches the exporter's table). */
 const INDEX_TO_SITE: readonly ConnectionSite[] = ["top", "left", "bottom", "right"];
+
+/** OOXML arrowhead types this app understands (others → none). */
+const ARROW_TYPE_FROM_OOXML = new Set(["triangle", "stealth", "arrow", "diamond", "oval"]);
+const ARROW_SIZE_FROM_OOXML: Record<string, ArrowEnd["size"]> = {
+  sm: "small",
+  med: "medium",
+  lg: "large",
+};
 
 /**
  * Numeric `p:cNvPr@id` → restored editor object id, per slide. Connectors
@@ -401,7 +410,17 @@ function parseConnector(cxnSp: XElement, registry: ShapeIdRegistry): ConnectorOb
   };
 
   const line = spPr?.element(A.ln);
-  const tailType = line?.element(A.tailEnd)?.attribute("type")?.value;
+  const readArrow = (end: XElement | null | undefined): ArrowEnd => {
+    const type = end?.attribute("type")?.value;
+    if (!type || !ARROW_TYPE_FROM_OOXML.has(type)) {
+      return { type: "none", size: "medium" };
+    }
+    const size = end?.attribute("len")?.value ?? end?.attribute("w")?.value;
+    return {
+      type: type as ArrowEnd["type"],
+      size: ARROW_SIZE_FROM_OOXML[size ?? ""] ?? "medium",
+    };
+  };
 
   return {
     id: createId("object"),
@@ -415,7 +434,8 @@ function parseConnector(cxnSp: XElement, registry: ShapeIdRegistry): ConnectorOb
     ...frame,
     lineColor: (line ? solidFillColor(line) : undefined) ?? "#1f2937",
     lineWidth: line ? Math.max(1, emuToPx(line.attribute("w")?.value)) : 1,
-    arrowEnd: tailType !== undefined && tailType !== "none",
+    startArrow: readArrow(line?.element(A.headEnd)),
+    endArrow: readArrow(line?.element(A.tailEnd)),
   };
 }
 

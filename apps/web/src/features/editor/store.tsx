@@ -764,7 +764,8 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
         height: 0,
         lineColor: "#1f2937",
         lineWidth: 2,
-        arrowEnd: true,
+        startArrow: { type: "none", size: "medium" },
+        endArrow: { type: "triangle", size: "medium" },
       };
       const next = patchSlide(state, (s) => ({
         ...s,
